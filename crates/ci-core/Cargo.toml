@@ -1,0 +1,11 @@
+[package]
+name = "ci-core"
+version = "0.1.0"
+edition = "2021"
+description = "Core types for the Codebase Intelligence Engine (NodeId, EdgeType, NodeLabel, InternedStr)"
+
+[dependencies]
+rkyv = "0.8"
+
+[dev-dependencies]
+# No extra dev deps needed — tests use only std
