@@ -5,13 +5,18 @@
 //!
 //! # Types
 //!
-//! | Type          | Repr     | Role                                      |
-//! |---------------|----------|-------------------------------------------|
-//! | [`NodeId`]    | `u32`    | Stable index into SoA node arrays         |
-//! | [`EdgeId`]    | `u32`    | Stable index into SoA edge arrays         |
-//! | [`NodeLabel`] | enum     | Kind of a node; drives bitmap indexes     |
-//! | [`EdgeType`]  | enum     | Relationship between two nodes            |
-//! | [`InternedStr`] | `u32`  | 4-byte handle into the string interner    |
+//! | Type               | Repr  | Role                                      |
+//! |--------------------|-------|-------------------------------------------|
+//! | [`NodeId`]         | `u32` | Stable index into SoA node arrays         |
+//! | [`EdgeId`]         | `u32` | Stable index into SoA edge arrays         |
+//! | [`NodeLabel`]      | enum  | Kind of a node; drives bitmap indexes     |
+//! | [`EdgeType`]       | enum  | Relationship between two nodes            |
+//! | [`InternedStr`]    | `u32` | 4-byte handle into the string interner    |
+//! | [`StringInterner`] | —     | Concurrent 16-shard string interner       |
+//! | [`FrozenInterner`] | —     | Compacted single-buffer string table      |
+
+mod interner;
+pub use interner::{FrozenInterner, StringInterner};
 
 use std::fmt;
 

@@ -5,6 +5,7 @@ edition = "2021"
 description = "Core types for the Codebase Intelligence Engine (NodeId, EdgeType, NodeLabel, InternedStr)"
 
 [dependencies]
+ahash = "0.8"
 rkyv = "0.8"
 
 [dev-dependencies]
