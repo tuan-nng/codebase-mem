@@ -27,7 +27,7 @@ use std::hash::{Hash, Hasher};
 use std::sync::Mutex;
 
 use ahash::AHashMap;
-use rkyv::{Archive, Serialize};
+use rkyv::{Archive, Deserialize, Serialize};
 
 use crate::InternedStr;
 
@@ -156,8 +156,8 @@ impl Default for StringInterner {
 ///
 /// Handles stored in `FrozenGraph` are global byte offsets into `buf`.
 /// `resolve()` is a single bounds-checked slice operation — O(1), lock-free.
-#[derive(Debug, Archive, Serialize)]
-#[rkyv(attr(derive(Debug)))]
+#[derive(Debug, Clone, Archive, Serialize, Deserialize)]
+#[rkyv(derive(Debug))]
 pub struct FrozenInterner {
     buf: Vec<u8>,
 }

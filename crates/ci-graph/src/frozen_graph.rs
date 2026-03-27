@@ -9,10 +9,14 @@
 //! - `HashMap<InternedStr, NodeId>` — qualified-name to node lookup
 //! - `HashMap<InternedStr, Vec<NodeId>>` — file path to nodes lookup
 //! - `fst::Map` + side-table — bare-name FST for prefix/regex/fuzzy search (E4-1)
+//!
+//! E1-6 adds rkyv serialization: `save()` writes a magic header + checksum +
+//! rkyv payload; `load()` mmaps and validates with zero heap allocation.
 
 use std::collections::HashMap;
 
 use ci_core::{EdgeType, FrozenInterner, InternedStr, NodeId, NodeLabel};
+use rkyv::{Archive, Deserialize, Serialize};
 use roaring::RoaringBitmap;
 use smallvec::SmallVec;
 
@@ -38,6 +42,9 @@ use smallvec::SmallVec;
 /// dropped immediately after the CSR construction phase, before any secondary
 /// indexes are built.  This bounds peak memory to approximately 1.3x the final
 /// `FrozenGraph` size.
+#[derive(Archive, Serialize, Deserialize)]
+#[rkyv(derive(Debug))]
+#[derive(Debug, Clone)]
 pub struct FrozenGraph {
     // ── Hot node data ─────────────────────────────────────────────────────────
 
@@ -77,18 +84,19 @@ pub struct FrozenGraph {
 
     /// String interner — source of truth for resolving `InternedStr` handles.
     interner: FrozenInterner,
-    /// One `RoaringBitmap` per `NodeLabel` variant. `label_index[label as usize]`
-    /// gives the set of all `NodeId`s (as `u32`) with that label.
-    label_index: Box<[RoaringBitmap; NodeLabel::COUNT]>,
+    /// One `RoaringBitmap` per `NodeLabel` variant, stored as serialized bytes
+    /// since `RoaringBitmap` does not implement `rkyv::Archive`. Use
+    /// `label_index()` to deserialize on demand.
+    label_index_bytes: Vec<u8>,
     /// Qualified-name → `NodeId` lookup. The hottest query path.
     /// Last write wins when multiple nodes share a name handle (same QN string).
     qn_index: HashMap<InternedStr, NodeId>,
     /// File path → list of `NodeId`s. All nodes whose `node_file` equals the key.
     file_index: HashMap<InternedStr, Vec<NodeId>>,
-    /// FST over all distinct bare symbol names in lexicographic order.
-    /// Each entry maps `name_bytes → slot_index` into `bare_name_nodes`.
-    /// Search methods (prefix, regex, fuzzy) are implemented in E4-1.
-    bare_name_fst: fst::Map<Vec<u8>>,
+    /// Raw FST bytes for the bare-name index. Stored as bytes so it can be
+    /// archived by rkyv (the `fst::Map` type itself does not implement `Archive`).
+    /// Reconstructed into an `fst::Map` on demand by [`bare_name_fst()`].
+    bare_name_fst_bytes: Vec<u8>,
     /// Side-table for the bare-name FST. `bare_name_nodes[slot]` holds all
     /// `NodeId`s whose symbol name resolves to the same string.
     /// `SmallVec<[NodeId; 1]>` avoids heap allocation for the common case where
@@ -229,9 +237,25 @@ impl FrozenGraph {
     }
 
     /// Returns the `RoaringBitmap` of all node IDs with the given label.
-    #[inline]
-    pub fn nodes_with_label(&self, label: NodeLabel) -> &RoaringBitmap {
-        &self.label_index[label as usize]
+    /// Deserialized from the stored byte buffer on each call.
+    ///
+    /// The byte buffer stores each bitmap as `[4-byteLE-size][serialized-bytes]`
+    /// concatenated in `NodeLabel` order.
+    pub fn nodes_with_label(&self, label: NodeLabel) -> RoaringBitmap {
+        let idx = label as usize;
+        let mut offset = 0usize;
+        for _ in 0..idx {
+            // Skip past each preceding bitmap: [size][data]
+            let size_bytes: [u8; 4] = self.label_index_bytes[offset..offset + 4]
+                .try_into().unwrap();
+            let size = u32::from_le_bytes(size_bytes) as usize;
+            offset += 4 + size;
+        }
+        let size_bytes: [u8; 4] = self.label_index_bytes[offset..offset + 4]
+            .try_into().unwrap();
+        let size = u32::from_le_bytes(size_bytes) as usize;
+        RoaringBitmap::deserialize_from(&self.label_index_bytes[offset + 4..offset + 4 + size])
+            .expect("label_index_bytes must contain valid RoaringBitmap data")
     }
 
     /// Returns the `NodeId` for the given qualified-name handle, if any.
@@ -253,12 +277,26 @@ impl FrozenGraph {
         self.file_index.get(&file).map_or(&[], Vec::as_slice)
     }
 
-    /// Returns the raw FST over all distinct symbol names.
-    /// Each FST value is a slot index into [`bare_name_nodes`].
-    /// Search methods (prefix, regex, fuzzy) are implemented in E4-1.
+    /// Returns the FST over all distinct symbol names, reconstructed from the
+    /// serialized byte representation.
+    ///
+    /// The returned `fst::Map` is built from the stored bytes. For zero-copy
+    /// access patterns that avoid this copy, use [`bare_name_fst_bytes()`] and
+    /// the FST stream API directly.
     #[inline]
-    pub fn bare_name_fst(&self) -> &fst::Map<Vec<u8>> {
-        &self.bare_name_fst
+    pub fn bare_name_fst(&self) -> fst::Map<Vec<u8>> {
+        fst::Map::new(self.bare_name_fst_bytes.clone())
+            .expect("bare_name_fst_bytes must be valid FST bytes")
+    }
+
+    /// Returns the raw FST bytes for the bare-name index.
+    ///
+    /// This enables zero-copy access via the FST stream API without reconstructing
+    /// the owned `fst::Map`. Search methods (prefix, regex, fuzzy) are implemented
+    /// in E4-1.
+    #[inline]
+    pub fn bare_name_fst_bytes(&self) -> &[u8] {
+        &self.bare_name_fst_bytes
     }
 
     /// Returns all `NodeId`s whose symbol name maps to `slot` in the FST.
@@ -346,7 +384,18 @@ impl super::MutableGraph {
         for (idx, &label) in node_labels.iter().enumerate() {
             label_bitmaps[label as usize].insert(idx as u32);
         }
-        let label_index = Box::new(label_bitmaps);
+        // Serialize each bitmap as [4-byteLE-size][bytes] for rkyv archiving.
+        let label_index_bytes = {
+            let mut bytes = Vec::new();
+            for bitmap in &label_bitmaps {
+                let mut buf = Vec::new();
+                bitmap.serialize_into(&mut buf).unwrap();
+                let size = u32::try_from(buf.len()).unwrap();
+                bytes.extend_from_slice(&size.to_le_bytes());
+                bytes.extend_from_slice(&buf);
+            }
+            bytes
+        };
 
         // ── Step 7: QN index ──────────────────────────────────────────────────
         let mut qn_index = HashMap::with_capacity(node_names.len());
@@ -361,7 +410,7 @@ impl super::MutableGraph {
         }
 
         // ── Step 9: FST bare-name index ────────────────────────────────────────
-        let (bare_name_fst, bare_name_nodes) =
+        let (bare_name_fst_bytes, bare_name_nodes) =
             build_bare_name_index(&node_names, &interner);
 
         FrozenGraph {
@@ -377,10 +426,10 @@ impl super::MutableGraph {
             rev_edge_sources,
             rev_edge_types,
             interner,
-            label_index,
+            label_index_bytes,
             qn_index,
             file_index,
-            bare_name_fst,
+            bare_name_fst_bytes,
             bare_name_nodes,
         }
     }
@@ -494,8 +543,8 @@ fn build_reverse_csr(
 
 /// Builds the bare-name FST and its side-table from the node name array.
 ///
-/// Returns `(fst_map, side_table)` where:
-/// - `fst_map` maps each distinct resolved name string to a `u64` slot index
+/// Returns `(fst_bytes, side_table)` where:
+/// - `fst_bytes` is the raw serialized FST (suitable for rkyv archiving)
 /// - `side_table[slot]` holds all `NodeId`s whose name resolves to that string
 ///
 /// `SmallVec<[NodeId; 1]>` avoids heap allocation for the common case where
@@ -509,7 +558,7 @@ fn build_reverse_csr(
 fn build_bare_name_index(
     node_names: &[InternedStr],
     interner: &FrozenInterner,
-) -> (fst::Map<Vec<u8>>, Vec<SmallVec<[NodeId; 1]>>) {
+) -> (Vec<u8>, Vec<SmallVec<[NodeId; 1]>>) {
     // 1. Collect (resolved string, NodeId) pairs.
     let mut pairs: Vec<(&str, NodeId)> = node_names
         .iter()
@@ -541,10 +590,9 @@ fn build_bare_name_index(
             .expect("FST keys must be inserted in lexicographic order");
     }
 
-    // 4. Finalise the FST.
+    // 4. Finalise the FST into raw bytes for rkyv archiving.
     let bytes = builder.into_inner().expect("FST construction failed");
-    let map = fst::Map::new(bytes).expect("FST bytes are invalid");
-    (map, side_table)
+    (bytes, side_table)
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────

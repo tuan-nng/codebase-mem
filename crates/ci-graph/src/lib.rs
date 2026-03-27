@@ -23,9 +23,11 @@
 
 mod mutable_graph;
 mod frozen_graph;
+pub mod persistence;
 
 pub use mutable_graph::MutableGraph;
 pub use frozen_graph::FrozenGraph;
+pub use persistence::{MmapFrozenGraph, save, serialized_size};
 
 #[cfg(test)]
 mod tests {

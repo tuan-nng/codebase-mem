@@ -6,11 +6,16 @@ description = "Mutable and frozen graph structures for the Codebase Intelligence
 
 [dependencies]
 ci-core = { path = "../ci-core" }
+rkyv = { version = "0.8.15", default-features = false, features = ["std", "alloc", "bytecheck", "hashbrown-0_15", "smallvec-1"] }
 parking_lot = "0.12"
 rayon = "1.10"
 roaring = "0.10"
 fst = "0.4"
 smallvec = "1"
+memmap2 = "0.9"
+xxhash-rust = { version = "0.8", features = ["xxh3"] }
+thiserror = "2"
 
 [dev-dependencies]
 ci-core = { path = "../ci-core" }
+tempfile = "3"

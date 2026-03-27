@@ -20,7 +20,7 @@ pub use interner::{FrozenInterner, StringInterner};
 
 use std::fmt;
 
-use rkyv::{Archive, Serialize};
+use rkyv::{Archive, Deserialize, Serialize};
 
 // ── NodeId ────────────────────────────────────────────────────────────────────
 
@@ -33,7 +33,7 @@ use rkyv::{Archive, Serialize};
 /// # Ordering
 /// `NodeId` values are ordered numerically; the ordering carries no semantic
 /// meaning beyond providing a total order for use in sorted structures.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Archive, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Archive, Serialize, Deserialize)]
 #[rkyv(attr(derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)))]
 pub struct NodeId(pub u32);
 
@@ -63,7 +63,7 @@ impl From<NodeId> for u32 {
 /// Stable identifier for an edge in the code graph.
 ///
 /// Mirrors [`NodeId`] in design: a 4-byte index into the SoA edge arrays.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Archive, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Archive, Serialize, Deserialize)]
 #[rkyv(attr(derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)))]
 pub struct EdgeId(pub u32);
 
@@ -98,7 +98,7 @@ impl From<EdgeId> for u32 {
 /// Variants are grouped into two categories:
 /// - **Structural** — project hierarchy nodes (project → package → dir → file)
 /// - **Symbols** — code entities extracted from source files
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Archive, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Archive, Serialize, Deserialize)]
 #[rkyv(attr(derive(Debug, Clone, Copy, PartialEq, Eq, Hash)))]
 #[repr(u8)]
 pub enum NodeLabel {
@@ -190,7 +190,7 @@ impl fmt::Display for NodeLabel {
 ///
 /// Edge types drive query semantics: traversal filters, confidence scoring,
 /// and the Cypher-like query language all pattern-match on `EdgeType`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Archive, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Archive, Serialize, Deserialize)]
 #[rkyv(attr(derive(Debug, Clone, Copy, PartialEq, Eq, Hash)))]
 #[repr(u8)]
 pub enum EdgeType {
@@ -251,7 +251,7 @@ impl fmt::Display for EdgeType {
 /// `Display` intentionally shows the raw handle value (`InternedStr(N)`).
 /// To get the string contents, pass the handle to the `StringInterner` or
 /// `FrozenGraph`.  This avoids any hidden global state in this crate.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Archive, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Archive, Serialize, Deserialize)]
 #[rkyv(attr(derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)))]
 pub struct InternedStr(pub u32);
 
