@@ -33,7 +33,9 @@ use rkyv::{Archive, Deserialize, Serialize};
 /// # Ordering
 /// `NodeId` values are ordered numerically; the ordering carries no semantic
 /// meaning beyond providing a total order for use in sorted structures.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Archive, Serialize, Deserialize)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Archive, Serialize, Deserialize,
+)]
 #[rkyv(attr(derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)))]
 pub struct NodeId(pub u32);
 
@@ -63,7 +65,9 @@ impl From<NodeId> for u32 {
 /// Stable identifier for an edge in the code graph.
 ///
 /// Mirrors [`NodeId`] in design: a 4-byte index into the SoA edge arrays.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Archive, Serialize, Deserialize)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Archive, Serialize, Deserialize,
+)]
 #[rkyv(attr(derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)))]
 pub struct EdgeId(pub u32);
 
@@ -167,18 +171,18 @@ impl fmt::Display for NodeLabel {
     #[inline]
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(match self {
-            NodeLabel::Project   => "Project",
-            NodeLabel::Package   => "Package",
+            NodeLabel::Project => "Project",
+            NodeLabel::Package => "Package",
             NodeLabel::Directory => "Directory",
-            NodeLabel::File      => "File",
-            NodeLabel::Class     => "Class",
+            NodeLabel::File => "File",
+            NodeLabel::Class => "Class",
             NodeLabel::Interface => "Interface",
-            NodeLabel::Trait     => "Trait",
-            NodeLabel::Function  => "Function",
-            NodeLabel::Method    => "Method",
+            NodeLabel::Trait => "Trait",
+            NodeLabel::Function => "Function",
+            NodeLabel::Method => "Method",
             NodeLabel::TypeAlias => "TypeAlias",
-            NodeLabel::Variable  => "Variable",
-            NodeLabel::Field     => "Field",
+            NodeLabel::Variable => "Variable",
+            NodeLabel::Field => "Field",
             NodeLabel::Namespace => "Namespace",
         })
     }
@@ -223,16 +227,16 @@ impl fmt::Display for EdgeType {
     #[inline]
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(match self {
-            EdgeType::Contains   => "CONTAINS",
-            EdgeType::Calls      => "CALLS",
-            EdgeType::CallsHttp  => "CALLS_HTTP",
-            EdgeType::Imports    => "IMPORTS",
-            EdgeType::ReExports  => "REEXPORTS",
-            EdgeType::Inherits   => "INHERITS",
+            EdgeType::Contains => "CONTAINS",
+            EdgeType::Calls => "CALLS",
+            EdgeType::CallsHttp => "CALLS_HTTP",
+            EdgeType::Imports => "IMPORTS",
+            EdgeType::ReExports => "REEXPORTS",
+            EdgeType::Inherits => "INHERITS",
             EdgeType::Implements => "IMPLEMENTS",
-            EdgeType::Decorates  => "DECORATES",
-            EdgeType::Uses       => "USES",
-            EdgeType::Tests      => "TESTS",
+            EdgeType::Decorates => "DECORATES",
+            EdgeType::Uses => "USES",
+            EdgeType::Tests => "TESTS",
         })
     }
 }
@@ -251,7 +255,9 @@ impl fmt::Display for EdgeType {
 /// `Display` intentionally shows the raw handle value (`InternedStr(N)`).
 /// To get the string contents, pass the handle to the `StringInterner` or
 /// `FrozenGraph`.  This avoids any hidden global state in this crate.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Archive, Serialize, Deserialize)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Archive, Serialize, Deserialize,
+)]
 #[rkyv(attr(derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)))]
 pub struct InternedStr(pub u32);
 

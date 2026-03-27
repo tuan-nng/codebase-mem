@@ -21,13 +21,13 @@
 //! efficient forward and reverse traversal.  Node and edge SoA arrays are
 //! moved (not copied) from the mutable phase.
 
-mod mutable_graph;
 mod frozen_graph;
+mod mutable_graph;
 pub mod persistence;
 
-pub use mutable_graph::MutableGraph;
 pub use frozen_graph::FrozenGraph;
-pub use persistence::{MmapFrozenGraph, save, serialized_size};
+pub use mutable_graph::MutableGraph;
+pub use persistence::{save, serialized_size, MmapFrozenGraph};
 
 #[cfg(test)]
 mod tests {
@@ -84,7 +84,13 @@ mod tests {
         #[test]
         fn add_single_node_returns_node_id_zero() {
             let graph = MutableGraph::new();
-            let id = graph.add_node(NodeLabel::Function, InternedStr(100), InternedStr(200), 5, 10);
+            let id = graph.add_node(
+                NodeLabel::Function,
+                InternedStr(100),
+                InternedStr(200),
+                5,
+                10,
+            );
             assert_eq!(id, NodeId(0));
         }
 
@@ -432,7 +438,8 @@ mod tests {
             let mut ids = Vec::new();
 
             for i in 0..50 {
-                let id = graph.add_node(NodeLabel::File, InternedStr(i as u32), InternedStr(0), 0, 0);
+                let id =
+                    graph.add_node(NodeLabel::File, InternedStr(i as u32), InternedStr(0), 0, 0);
                 ids.push(id);
             }
 

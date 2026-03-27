@@ -18,9 +18,7 @@
 use std::path::PathBuf;
 
 use ci_core::{EdgeType, InternedStr, NodeId, NodeLabel, StringInterner};
-use criterion::{
-    black_box, criterion_group, criterion_main, BenchmarkId, Criterion, SamplingMode,
-};
+use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion, SamplingMode};
 use fst::automaton::Automaton;
 use fst::{IntoStreamer, Streamer};
 use rayon::prelude::*;
@@ -82,11 +80,11 @@ impl GraphFixture {
         // Build the mutable graph.
         let graph = MutableGraph::new();
 
-        for i in 0..NODE_COUNT {
+        for (i, &name_handle) in name_handles.iter().enumerate().take(NODE_COUNT) {
             let file_idx = i / NODES_PER_FILE;
             graph.add_node(
                 NodeLabel::Function,
-                name_handles[i],
+                name_handle,
                 file_handles[file_idx],
                 (i % 1000) as u32,
                 0,
@@ -128,7 +126,11 @@ impl GraphFixture {
         let frozen = graph.freeze(frozen_interner);
         save(&frozen, &path).expect("save should succeed");
 
-        Self { frozen, path, temp_dir: tmp_dir }
+        Self {
+            frozen,
+            path,
+            temp_dir: tmp_dir,
+        }
     }
 }
 
@@ -227,8 +229,8 @@ fn bench_fst_search(c: &mut Criterion) {
     let fst = frozen.bare_name_fst();
 
     let prefixes = [
-        "fn_0000", "fn_0001", "fn_0010", "fn_0100", "fn_0101",
-        "fn_1000", "fn_1234", "fn_5000", "fn_9999", "src/fi",
+        "fn_0000", "fn_0001", "fn_0010", "fn_0100", "fn_0101", "fn_1000", "fn_1234", "fn_5000",
+        "fn_9999", "src/fi",
     ];
 
     let mut group = c.benchmark_group("fst_prefix_search");

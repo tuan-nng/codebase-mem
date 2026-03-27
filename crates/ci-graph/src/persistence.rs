@@ -38,25 +38,25 @@ pub(crate) const HEADER_SIZE: usize = 32;
 /// ```
 #[repr(C, packed)]
 pub(crate) struct FrozenGraphHeader {
-    magic:         [u8; 4],
-    version:       u16,
-    _reserved1:   u8,
+    magic: [u8; 4],
+    version: u16,
+    _reserved1: u8,
     checksum_algo: u8,
-    checksum:      u64,
-    payload_len:   u64,
-    _reserved2:    u64,
+    checksum: u64,
+    payload_len: u64,
+    _reserved2: u64,
 }
 
 impl FrozenGraphHeader {
     fn new(payload_len: u64, checksum: u64) -> Self {
         Self {
-            magic:         *MAGIC,
-            version:       VERSION,
-            _reserved1:   0,
+            magic: *MAGIC,
+            version: VERSION,
+            _reserved1: 0,
             checksum_algo: 0,
             checksum,
             payload_len,
-            _reserved2:    0,
+            _reserved2: 0,
         }
     }
 
@@ -90,13 +90,13 @@ impl FrozenGraphHeader {
 
     fn from_bytes(buf: &[u8; HEADER_SIZE]) -> Self {
         Self {
-            magic:         buf[0..4].try_into().unwrap(),
-            version:       u16::from_le_bytes([buf[4], buf[5]]),
-            _reserved1:   buf[6],
+            magic: buf[0..4].try_into().unwrap(),
+            version: u16::from_le_bytes([buf[4], buf[5]]),
+            _reserved1: buf[6],
             checksum_algo: buf[7],
-            checksum:      u64::from_le_bytes(buf[8..16].try_into().unwrap()),
-            payload_len:   u64::from_le_bytes(buf[16..24].try_into().unwrap()),
-            _reserved2:    u64::from_le_bytes(buf[24..32].try_into().unwrap()),
+            checksum: u64::from_le_bytes(buf[8..16].try_into().unwrap()),
+            payload_len: u64::from_le_bytes(buf[16..24].try_into().unwrap()),
+            _reserved2: u64::from_le_bytes(buf[24..32].try_into().unwrap()),
         }
     }
 }
@@ -158,12 +158,7 @@ impl MmapFrozenGraph {
     /// Loads from an already-open file descriptor at a specific offset and length.
     /// Useful for advanced use cases where the caller manages the file.
     pub fn load_from(file: &File, offset: u64, len: usize) -> std::io::Result<Self> {
-        let mmap = unsafe {
-            MmapOptions::new()
-                .offset(offset)
-                .len(len)
-                .map(file)?
-        };
+        let mmap = unsafe { MmapOptions::new().offset(offset).len(len).map(file)? };
         Self::from_mmap(mmap)
     }
 
@@ -300,9 +295,7 @@ impl MmapFrozenGraph {
             ));
         }
 
-        let header = FrozenGraphHeader::from_bytes(
-            (&mmap[..HEADER_SIZE]).try_into().unwrap(),
-        );
+        let header = FrozenGraphHeader::from_bytes((&mmap[..HEADER_SIZE]).try_into().unwrap());
 
         if let Some(e) = header.validate() {
             return Err(e.into());
@@ -326,7 +319,7 @@ impl MmapFrozenGraph {
         if computed != header.checksum {
             return Err(HeaderError::ChecksumMismatch {
                 expected: header.checksum,
-                actual:   computed,
+                actual: computed,
             }
             .into());
         }
@@ -335,10 +328,7 @@ impl MmapFrozenGraph {
         let graph = rkyv::from_bytes::<FrozenGraph, rkyv::rancor::Error>(payload)
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string()))?;
 
-        Ok(MmapFrozenGraph {
-            mmap,
-            graph,
-        })
+        Ok(MmapFrozenGraph { mmap, graph })
     }
 }
 
@@ -364,10 +354,8 @@ pub fn save(graph: &FrozenGraph, path: &Path) -> Result<u64, SaveError> {
         .map_err(|e| SaveError::Serialization(e.to_string()))?;
 
     let checksum = xxh3_64(&bytes);
-    let payload_len =
-        u64::try_from(bytes.len()).map_err(|_| {
-            SaveError::Serialization("graph exceeds 2^64 bytes".into())
-        })?;
+    let payload_len = u64::try_from(bytes.len())
+        .map_err(|_| SaveError::Serialization("graph exceeds 2^64 bytes".into()))?;
 
     let header = FrozenGraphHeader::new(payload_len, checksum);
 
@@ -395,14 +383,12 @@ pub fn serialized_size(graph: &FrozenGraph) -> std::io::Result<u64> {
 
 #[cfg(test)]
 mod tests {
-    use ci_core::{
-        EdgeType, FrozenInterner, InternedStr, NodeId, NodeLabel, StringInterner,
-    };
+    use ci_core::{EdgeType, FrozenInterner, InternedStr, NodeId, NodeLabel, StringInterner};
     use std::io::{Read, Seek, SeekFrom, Write};
     use std::path::Path;
 
-    use crate::{save, FrozenGraph, MmapFrozenGraph, MutableGraph};
     use super::{FrozenGraphHeader, HeaderError, HEADER_SIZE};
+    use crate::{save, FrozenGraph, MmapFrozenGraph, MutableGraph};
 
     // ── Test helpers ──────────────────────────────────────────────────────────
 
@@ -410,7 +396,7 @@ mod tests {
         let si = StringInterner::new();
         let raw: Vec<InternedStr> = strings.iter().map(|s| si.intern(s)).collect();
         let (fi, remap) = si.compact();
-        (fi, raw.into_iter().map(|h| remap(h)).collect())
+        (fi, raw.into_iter().map(remap).collect())
     }
 
     fn empty_interner() -> FrozenInterner {
@@ -418,11 +404,10 @@ mod tests {
     }
 
     fn build_simple_frozen() -> FrozenGraph {
-        let (interner, handles) =
-            make_interner(&["file", "MyClass", "render", "src/a.rs"]);
+        let (interner, handles) = make_interner(&["file", "MyClass", "render", "src/a.rs"]);
         let mutable = MutableGraph::new();
-        let n0 = mutable.add_node(NodeLabel::File,   handles[0], handles[3], 0, 0);
-        let n1 = mutable.add_node(NodeLabel::Class,  handles[1], handles[3], 0, 0);
+        let n0 = mutable.add_node(NodeLabel::File, handles[0], handles[3], 0, 0);
+        let n1 = mutable.add_node(NodeLabel::Class, handles[1], handles[3], 0, 0);
         let n2 = mutable.add_node(NodeLabel::Method, handles[2], handles[3], 0, 0);
         mutable.add_edge(n0, n1, EdgeType::Contains);
         mutable.add_edge(n0, n2, EdgeType::Contains);
@@ -647,7 +632,11 @@ mod tests {
             save(&frozen, &path).unwrap();
 
             // Flip a byte in the payload area.
-            let mut file = OpenOptions::new().read(true).write(true).open(&path).unwrap();
+            let mut file = OpenOptions::new()
+                .read(true)
+                .write(true)
+                .open(&path)
+                .unwrap();
             file.seek(SeekFrom::Start(HEADER_SIZE as u64 + 10)).unwrap();
             let mut byte = [0u8];
             file.read_exact(&mut byte).unwrap();
@@ -658,8 +647,7 @@ mod tests {
 
             let err = MmapFrozenGraph::load(&path).unwrap_err();
             assert!(
-                err.to_string().contains("checksum")
-                    || err.to_string().contains("Checksum"),
+                err.to_string().contains("checksum") || err.to_string().contains("Checksum"),
                 "got: {}",
                 err
             );
@@ -686,8 +674,7 @@ mod tests {
 
         #[test]
         fn load_rejects_nonexistent_file() {
-            let err =
-                MmapFrozenGraph::load(Path::new("/nonexistent/path/graph.bin")).unwrap_err();
+            let err = MmapFrozenGraph::load(Path::new("/nonexistent/path/graph.bin")).unwrap_err();
             assert_eq!(err.kind(), std::io::ErrorKind::NotFound);
         }
 

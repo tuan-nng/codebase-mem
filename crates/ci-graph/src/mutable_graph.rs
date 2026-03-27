@@ -30,14 +30,12 @@ use std::sync::atomic::{AtomicU32, Ordering};
 /// `FrozenGraph`, the mutable graph is discarded.
 pub struct MutableGraph {
     // ── Hot node data (frequently accessed during queries) ──────────────────
-
     /// Node kind label (Function, Class, File, etc.)
     node_labels: Mutex<Vec<NodeLabel>>,
     /// Interned symbol name.
     node_names: Mutex<Vec<InternedStr>>,
 
     // ── Cold node data (rarely accessed during queries) ─────────────────────
-
     /// Interned source file path.
     node_files: Mutex<Vec<InternedStr>>,
     /// 1-based line number in the source file (0 = unknown).
@@ -46,7 +44,6 @@ pub struct MutableGraph {
     node_columns: Mutex<Vec<u32>>,
 
     // ── Edge data ───────────────────────────────────────────────────────────
-
     /// Source node of each edge.
     edge_sources: Mutex<Vec<NodeId>>,
     /// Target node of each edge.
@@ -55,7 +52,6 @@ pub struct MutableGraph {
     edge_types: Mutex<Vec<EdgeType>>,
 
     // ── Atomic counters ─────────────────────────────────────────────────────
-
     next_node_id: AtomicU32,
     next_edge_id: AtomicU32,
 }
@@ -175,7 +171,9 @@ impl MutableGraph {
     ///
     /// Uses `Mutex::into_inner` to move the `Vec`s out of their mutexes in O(1).
     /// Only called from `freeze()` which already owns `self` exclusively.
-    pub(crate) fn into_parts(self) -> (
+    pub(crate) fn into_parts(
+        self,
+    ) -> (
         Vec<NodeLabel>,   // node_labels
         Vec<InternedStr>, // node_names
         Vec<InternedStr>, // node_files

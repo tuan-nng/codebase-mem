@@ -47,14 +47,12 @@ use smallvec::SmallVec;
 #[derive(Debug, Clone)]
 pub struct FrozenGraph {
     // ── Hot node data ─────────────────────────────────────────────────────────
-
     /// Node kind label (Function, Class, File, etc.), in `NodeId` index order.
     node_labels: Vec<NodeLabel>,
     /// Interned symbol name, in `NodeId` index order.
     node_names: Vec<InternedStr>,
 
     // ── Cold node data ────────────────────────────────────────────────────────
-
     /// Interned source file path, in `NodeId` index order.
     node_files: Vec<InternedStr>,
     /// 1-based line numbers (0 = unknown), in `NodeId` index order.
@@ -63,7 +61,6 @@ pub struct FrozenGraph {
     node_columns: Vec<u32>,
 
     // ── Forward CSR adjacency (outgoing edges) ────────────────────────────────
-
     /// CSR offset array for forward adjacency. Length = `node_count + 1`.
     forward_offsets: Vec<u32>,
     /// Target node of each edge, in CSR order (sorted by source then target).
@@ -72,7 +69,6 @@ pub struct FrozenGraph {
     forward_edge_types: Vec<EdgeType>,
 
     // ── Reverse CSR adjacency (incoming edges) ───────────────────────────────
-
     /// CSR offset array for reverse adjacency. Length = `node_count + 1`.
     rev_offsets: Vec<u32>,
     /// Source node of each incoming edge, in reverse-CSR order.
@@ -81,7 +77,6 @@ pub struct FrozenGraph {
     rev_edge_types: Vec<EdgeType>,
 
     // ── Secondary indexes (E1-5) ─────────────────────────────────────────────
-
     /// String interner — source of truth for resolving `InternedStr` handles.
     interner: FrozenInterner,
     /// One `RoaringBitmap` per `NodeLabel` variant, stored as serialized bytes
@@ -247,12 +242,14 @@ impl FrozenGraph {
         for _ in 0..idx {
             // Skip past each preceding bitmap: [size][data]
             let size_bytes: [u8; 4] = self.label_index_bytes[offset..offset + 4]
-                .try_into().unwrap();
+                .try_into()
+                .unwrap();
             let size = u32::from_le_bytes(size_bytes) as usize;
             offset += 4 + size;
         }
         let size_bytes: [u8; 4] = self.label_index_bytes[offset..offset + 4]
-            .try_into().unwrap();
+            .try_into()
+            .unwrap();
         let size = u32::from_le_bytes(size_bytes) as usize;
         RoaringBitmap::deserialize_from(&self.label_index_bytes[offset + 4..offset + 4 + size])
             .expect("label_index_bytes must contain valid RoaringBitmap data")
@@ -357,8 +354,8 @@ impl super::MutableGraph {
 
         let mut edges: Vec<(u32, NodeId, EdgeType)> = edge_sources
             .into_iter()
-            .zip(edge_targets.into_iter())
-            .zip(edge_types.into_iter())
+            .zip(edge_targets)
+            .zip(edge_types)
             .map(|((s, t), ty)| (s.0, t, ty))
             .collect();
 
@@ -372,8 +369,7 @@ impl super::MutableGraph {
             build_forward_csr(&edges, node_count);
 
         // ── Step 4: Build reverse CSR ──────────────────────────────────────────
-        let (rev_offsets, rev_edge_sources, rev_edge_types) =
-            build_reverse_csr(&edges, node_count);
+        let (rev_offsets, rev_edge_sources, rev_edge_types) = build_reverse_csr(&edges, node_count);
 
         // ── Step 5: Phased teardown (drop scratch edge Vec) ───────────────────
         drop(edges);
@@ -406,12 +402,14 @@ impl super::MutableGraph {
         // ── Step 8: File index ─────────────────────────────────────────────────
         let mut file_index: HashMap<InternedStr, Vec<NodeId>> = HashMap::new();
         for (idx, &file_handle) in node_files.iter().enumerate() {
-            file_index.entry(file_handle).or_default().push(NodeId(idx as u32));
+            file_index
+                .entry(file_handle)
+                .or_default()
+                .push(NodeId(idx as u32));
         }
 
         // ── Step 9: FST bare-name index ────────────────────────────────────────
-        let (bare_name_fst_bytes, bare_name_nodes) =
-            build_bare_name_index(&node_names, &interner);
+        let (bare_name_fst_bytes, bare_name_nodes) = build_bare_name_index(&node_names, &interner);
 
         FrozenGraph {
             node_labels,
@@ -439,7 +437,7 @@ impl super::MutableGraph {
 
 /// Sorts edges by source `NodeId` (ascending), breaking ties by target `NodeId`.
 #[inline]
-fn sort_edges(edges: &mut Vec<(u32, NodeId, EdgeType)>) {
+fn sort_edges(edges: &mut [(u32, NodeId, EdgeType)]) {
     edges.sort_by_key(|(src, tgt, _)| (*src, tgt.0));
 }
 
@@ -509,10 +507,8 @@ fn build_reverse_csr(
     }
 
     // Allocate with MaybeUninit to avoid zero-initializing then overwriting O(E) slots.
-    let mut sources: Vec<std::mem::MaybeUninit<NodeId>> =
-        Vec::with_capacity(edge_count);
-    let mut types: Vec<std::mem::MaybeUninit<EdgeType>> =
-        Vec::with_capacity(edge_count);
+    let mut sources: Vec<std::mem::MaybeUninit<NodeId>> = Vec::with_capacity(edge_count);
+    let mut types: Vec<std::mem::MaybeUninit<EdgeType>> = Vec::with_capacity(edge_count);
     // Safety: we resize to full capacity and write every element before finalization.
     unsafe {
         sources.set_len(edge_count);
@@ -526,15 +522,24 @@ fn build_reverse_csr(
         let pos = write_pos[tgt_idx] as usize;
         // Safety: pos is within [0, edge_count) by CSR construction invariant.
         unsafe {
-            sources.as_mut_ptr().add(pos).write(std::mem::MaybeUninit::new(NodeId(src)));
-            types.as_mut_ptr().add(pos).write(std::mem::MaybeUninit::new(ty));
+            sources
+                .as_mut_ptr()
+                .add(pos)
+                .write(std::mem::MaybeUninit::new(NodeId(src)));
+            types
+                .as_mut_ptr()
+                .add(pos)
+                .write(std::mem::MaybeUninit::new(ty));
         }
         write_pos[tgt_idx] += 1;
     }
 
     // Safety: all slots initialized above.
-    let sources = unsafe { std::mem::transmute::<_, Vec<NodeId>>(sources) };
-    let types = unsafe { std::mem::transmute::<_, Vec<EdgeType>>(types) };
+    let sources =
+        unsafe { std::mem::transmute::<Vec<std::mem::MaybeUninit<NodeId>>, Vec<NodeId>>(sources) };
+    let types = unsafe {
+        std::mem::transmute::<Vec<std::mem::MaybeUninit<EdgeType>>, Vec<EdgeType>>(types)
+    };
 
     (offsets, sources, types)
 }
@@ -613,7 +618,7 @@ mod tests {
         let si = StringInterner::new();
         let raw: Vec<InternedStr> = strings.iter().map(|s| si.intern(s)).collect();
         let (fi, remap) = si.compact();
-        (fi, raw.into_iter().map(|h| remap(h)).collect())
+        (fi, raw.into_iter().map(remap).collect())
     }
 
     /// Returns an empty `FrozenInterner` (no strings interned).
@@ -675,19 +680,19 @@ mod tests {
 
         fn build_three_nodes() -> ThreeNodes {
             let si = StringInterner::new();
-            let rh_proj  = si.intern("my_project");
-            let rh_file  = si.intern("main.rs");
+            let rh_proj = si.intern("my_project");
+            let rh_file = si.intern("main.rs");
             let rh_class = si.intern("MyClass");
-            let rh_root  = si.intern("/root");
-            let rh_src   = si.intern("/src");
+            let rh_root = si.intern("/root");
+            let rh_src = si.intern("/src");
             let (fi, remap) = si.compact();
             let [h_proj, h_file, h_class, h_root, h_src] =
-                [rh_proj, rh_file, rh_class, rh_root, rh_src].map(|h| remap(h));
+                [rh_proj, rh_file, rh_class, rh_root, rh_src].map(remap);
 
             let mutable = MutableGraph::new();
-            let n0 = mutable.add_node(NodeLabel::Project, h_proj,  h_root, 1,  1);
-            let n1 = mutable.add_node(NodeLabel::File,    h_file,  h_src,  10, 5);
-            let n2 = mutable.add_node(NodeLabel::Class,   h_class, h_src,  20, 3);
+            let n0 = mutable.add_node(NodeLabel::Project, h_proj, h_root, 1, 1);
+            let n1 = mutable.add_node(NodeLabel::File, h_file, h_src, 10, 5);
+            let n2 = mutable.add_node(NodeLabel::Class, h_class, h_src, 20, 3);
             ThreeNodes {
                 mutable,
                 ids: vec![n0, n1, n2],
@@ -699,7 +704,12 @@ mod tests {
 
         #[test]
         fn node_label_round_trips() {
-            let ThreeNodes { mutable, ids, interner, .. } = build_three_nodes();
+            let ThreeNodes {
+                mutable,
+                ids,
+                interner,
+                ..
+            } = build_three_nodes();
             let frozen = mutable.freeze(interner);
 
             assert_eq!(frozen.node_label(ids[0]), NodeLabel::Project);
@@ -709,7 +719,13 @@ mod tests {
 
         #[test]
         fn node_name_round_trips() {
-            let ThreeNodes { mutable, ids, interner, name_handles, .. } = build_three_nodes();
+            let ThreeNodes {
+                mutable,
+                ids,
+                interner,
+                name_handles,
+                ..
+            } = build_three_nodes();
             let frozen = mutable.freeze(interner);
 
             assert_eq!(frozen.node_name(ids[0]), name_handles[0]);
@@ -719,7 +735,13 @@ mod tests {
 
         #[test]
         fn node_file_round_trips() {
-            let ThreeNodes { mutable, ids, interner, file_handles, .. } = build_three_nodes();
+            let ThreeNodes {
+                mutable,
+                ids,
+                interner,
+                file_handles,
+                ..
+            } = build_three_nodes();
             let frozen = mutable.freeze(interner);
 
             assert_eq!(frozen.node_file(ids[0]), file_handles[0]);
@@ -729,7 +751,12 @@ mod tests {
 
         #[test]
         fn node_line_round_trips() {
-            let ThreeNodes { mutable, ids, interner, .. } = build_three_nodes();
+            let ThreeNodes {
+                mutable,
+                ids,
+                interner,
+                ..
+            } = build_three_nodes();
             let frozen = mutable.freeze(interner);
 
             assert_eq!(frozen.node_line(ids[0]), 1);
@@ -739,7 +766,12 @@ mod tests {
 
         #[test]
         fn node_column_round_trips() {
-            let ThreeNodes { mutable, ids, interner, .. } = build_three_nodes();
+            let ThreeNodes {
+                mutable,
+                ids,
+                interner,
+                ..
+            } = build_three_nodes();
             let frozen = mutable.freeze(interner);
 
             assert_eq!(frozen.node_column(ids[0]), 1);
@@ -756,8 +788,8 @@ mod tests {
         fn build_simple_graph() -> FrozenGraph {
             let (interner, handles) = make_interner(&["file", "MyClass", "render", "src/a.rs"]);
             let mutable = MutableGraph::new();
-            let n0 = mutable.add_node(NodeLabel::File,   handles[0], handles[3], 0, 0);
-            let n1 = mutable.add_node(NodeLabel::Class,  handles[1], handles[3], 0, 0);
+            let n0 = mutable.add_node(NodeLabel::File, handles[0], handles[3], 0, 0);
+            let n1 = mutable.add_node(NodeLabel::Class, handles[1], handles[3], 0, 0);
             let n2 = mutable.add_node(NodeLabel::Method, handles[2], handles[3], 0, 0);
 
             mutable.add_edge(n0, n1, EdgeType::Contains);
@@ -848,8 +880,8 @@ mod tests {
         fn build_simple_graph() -> FrozenGraph {
             let (interner, handles) = make_interner(&["file", "MyClass", "render", "src/a.rs"]);
             let mutable = MutableGraph::new();
-            let n0 = mutable.add_node(NodeLabel::File,   handles[0], handles[3], 0, 0);
-            let n1 = mutable.add_node(NodeLabel::Class,  handles[1], handles[3], 0, 0);
+            let n0 = mutable.add_node(NodeLabel::File, handles[0], handles[3], 0, 0);
+            let n1 = mutable.add_node(NodeLabel::Class, handles[1], handles[3], 0, 0);
             let n2 = mutable.add_node(NodeLabel::Method, handles[2], handles[3], 0, 0);
 
             mutable.add_edge(n0, n1, EdgeType::Contains);
@@ -975,19 +1007,21 @@ mod tests {
             let rh_fn = si.intern("isolated_fn");
             let rh_src = si.intern("src/");
             let (fi, remap) = si.compact();
-            let [h_file, h_class, h_fn, h_src] =
-                [rh_file, rh_class, rh_fn, rh_src].map(|h| remap(h));
+            let [h_file, h_class, h_fn, h_src] = [rh_file, rh_class, rh_fn, rh_src].map(remap);
 
             let mutable = MutableGraph::new();
             // Node 0: connected
-            let n0 = mutable.add_node(NodeLabel::File,     h_file,  h_src, 0, 0);
-            let n1 = mutable.add_node(NodeLabel::Class,    h_class, h_src, 0, 0);
+            let n0 = mutable.add_node(NodeLabel::File, h_file, h_src, 0, 0);
+            let n1 = mutable.add_node(NodeLabel::Class, h_class, h_src, 0, 0);
             // Node 2: isolated (no edges)
             mutable.add_node(NodeLabel::Function, h_fn, h_src, 0, 0);
 
             mutable.add_edge(n0, n1, EdgeType::Contains);
 
-            IsolatedGraph { frozen: mutable.freeze(fi), isolated_name: h_fn }
+            IsolatedGraph {
+                frozen: mutable.freeze(fi),
+                isolated_name: h_fn,
+            }
         }
 
         #[test]
@@ -1006,7 +1040,10 @@ mod tests {
 
         #[test]
         fn isolated_node_data_still_accessible() {
-            let IsolatedGraph { frozen, isolated_name } = build_with_isolated_node();
+            let IsolatedGraph {
+                frozen,
+                isolated_name,
+            } = build_with_isolated_node();
             assert_eq!(frozen.node_label(NodeId(2)), NodeLabel::Function);
             assert_eq!(frozen.node_name(NodeId(2)), isolated_name);
         }
@@ -1022,17 +1059,17 @@ mod tests {
                 "file", "MyClass", "render", "parse", "count", "score", "src/a.rs",
             ]);
             let mutable = MutableGraph::new();
-            let n0 = mutable.add_node(NodeLabel::File,     h[0], h[6], 0, 0);
-            mutable.add_node(NodeLabel::Class,    h[1], h[6], 0, 0);
-            mutable.add_node(NodeLabel::Method,   h[2], h[6], 0, 0);
+            let n0 = mutable.add_node(NodeLabel::File, h[0], h[6], 0, 0);
+            mutable.add_node(NodeLabel::Class, h[1], h[6], 0, 0);
+            mutable.add_node(NodeLabel::Method, h[2], h[6], 0, 0);
             mutable.add_node(NodeLabel::Function, h[3], h[6], 0, 0);
             mutable.add_node(NodeLabel::Variable, h[4], h[6], 0, 0);
-            mutable.add_node(NodeLabel::Field,    h[5], h[6], 0, 0);
+            mutable.add_node(NodeLabel::Field, h[5], h[6], 0, 0);
 
             // Add edges from n0 to several other nodes.
             mutable.add_edge(n0, NodeId(5), EdgeType::Contains); // target 5
-            mutable.add_edge(n0, NodeId(3), EdgeType::Calls);    // target 3
-            mutable.add_edge(n0, NodeId(1), EdgeType::Imports);  // target 1
+            mutable.add_edge(n0, NodeId(3), EdgeType::Calls); // target 3
+            mutable.add_edge(n0, NodeId(1), EdgeType::Imports); // target 1
 
             mutable.freeze(interner)
         }
@@ -1076,14 +1113,8 @@ mod tests {
             let mutable = MutableGraph::new();
 
             // Add nodes
-            for i in 0..node_count {
-                mutable.add_node(
-                    NodeLabel::Function,
-                    name_handles[i],
-                    file_handle,
-                    i as u32,
-                    0,
-                );
+            for (i, &name_handle) in name_handles.iter().enumerate().take(node_count) {
+                mutable.add_node(NodeLabel::Function, name_handle, file_handle, i as u32, 0);
             }
 
             // Add edges: node i -> node (i+j+1) % node_count for j in 0..5
@@ -1138,28 +1169,32 @@ mod tests {
 
         fn build_index_graph() -> IndexGraph {
             let si = StringInterner::new();
-            let rh_file_a  = si.intern("src/a.rs");
-            let rh_file_b  = si.intern("src/b.rs");
-            let rh_src_a   = si.intern("src/a.rs");  // same as rh_file_a: deduped
-            let rh_src_b   = si.intern("src/b.rs");  // same as rh_file_b: deduped
-            let rh_parse   = si.intern("parse");
-            let rh_render  = si.intern("render");
-            let rh_config  = si.intern("Config");
+            let rh_file_a = si.intern("src/a.rs");
+            let rh_file_b = si.intern("src/b.rs");
+            let rh_src_a = si.intern("src/a.rs"); // same as rh_file_a: deduped
+            let rh_src_b = si.intern("src/b.rs"); // same as rh_file_b: deduped
+            let rh_parse = si.intern("parse");
+            let rh_render = si.intern("render");
+            let rh_config = si.intern("Config");
             let (fi, remap) = si.compact();
-            let [h_file_a, _h_file_b, h_src_a, h_src_b, h_parse, h_render, h_config] =
-                [rh_file_a, rh_file_b, rh_src_a, rh_src_b, rh_parse, rh_render, rh_config]
-                    .map(|h| remap(h));
+            let [h_file_a, _h_file_b, h_src_a, h_src_b, h_parse, h_render, h_config] = [
+                rh_file_a, rh_file_b, rh_src_a, rh_src_b, rh_parse, rh_render, rh_config,
+            ]
+            .map(remap);
 
             let mutable = MutableGraph::new();
-            mutable.add_node(NodeLabel::File,     h_file_a, h_src_a, 1, 1);
-            mutable.add_node(NodeLabel::Function, h_parse,  h_src_a, 5, 1);
+            mutable.add_node(NodeLabel::File, h_file_a, h_src_a, 1, 1);
+            mutable.add_node(NodeLabel::Function, h_parse, h_src_a, 5, 1);
             mutable.add_node(NodeLabel::Function, h_render, h_src_b, 3, 1);
-            mutable.add_node(NodeLabel::Class,    h_config, h_src_b, 1, 1);
+            mutable.add_node(NodeLabel::Class, h_config, h_src_b, 1, 1);
 
             IndexGraph {
                 frozen: mutable.freeze(fi),
-                h_src_a, h_src_b,
-                h_parse, h_render, h_config,
+                h_src_a,
+                h_src_b,
+                h_parse,
+                h_render,
+                h_config,
             }
         }
 
@@ -1200,7 +1235,7 @@ mod tests {
         #[test]
         fn lookup_qn_finds_existing_node() {
             let g = build_index_graph();
-            assert_eq!(g.frozen.lookup_qn(g.h_parse),  Some(NodeId(1)));
+            assert_eq!(g.frozen.lookup_qn(g.h_parse), Some(NodeId(1)));
             assert_eq!(g.frozen.lookup_qn(g.h_render), Some(NodeId(2)));
             assert_eq!(g.frozen.lookup_qn(g.h_config), Some(NodeId(3)));
         }
@@ -1221,11 +1256,11 @@ mod tests {
             let rh_name = si.intern("do_thing");
             let rh_file = si.intern("src/a.rs");
             let (fi, remap) = si.compact();
-            let [h_name, h_file] = [rh_name, rh_file].map(|h| remap(h));
+            let [h_name, h_file] = [rh_name, rh_file].map(remap);
 
             let mutable = MutableGraph::new();
             mutable.add_node(NodeLabel::Function, h_name, h_file, 1, 1); // NodeId(0)
-            mutable.add_node(NodeLabel::Method,   h_name, h_file, 5, 1); // NodeId(1) — same QN
+            mutable.add_node(NodeLabel::Method, h_name, h_file, 5, 1); // NodeId(1) — same QN
             let frozen = mutable.freeze(fi);
 
             assert_eq!(frozen.lookup_qn(h_name), Some(NodeId(1)));
@@ -1287,20 +1322,20 @@ mod tests {
         fn fst_side_table_groups_duplicate_names() {
             // Two nodes with the same bare name "new".
             let si = StringInterner::new();
-            let rh_new1  = si.intern("new");
-            let rh_new2  = si.intern("new"); // same string — deduped in interner
-            let rh_file  = si.intern("src/c.rs");
+            let rh_new1 = si.intern("new");
+            let rh_new2 = si.intern("new"); // same string — deduped in interner
+            let rh_file = si.intern("src/c.rs");
             let (fi, remap) = si.compact();
-            let [h_new1, h_new2, h_file] = [rh_new1, rh_new2, rh_file].map(|h| remap(h));
+            let [h_new1, h_new2, h_file] = [rh_new1, rh_new2, rh_file].map(remap);
             // Both handles must be equal since the string is deduped.
             assert_eq!(h_new1, h_new2);
 
             let mutable = MutableGraph::new();
             mutable.add_node(NodeLabel::Function, h_new1, h_file, 1, 1);
-            mutable.add_node(NodeLabel::Method,   h_new2, h_file, 5, 1);
+            mutable.add_node(NodeLabel::Method, h_new2, h_file, 5, 1);
             let frozen = mutable.freeze(fi);
 
-            let fst  = frozen.bare_name_fst();
+            let fst = frozen.bare_name_fst();
             let slot = fst.get("new").expect("'new' must be in FST");
             let nodes = frozen.bare_name_nodes(slot);
             // Both NodeId(0) and NodeId(1) must appear under the same slot.
@@ -1321,7 +1356,7 @@ mod tests {
         #[test]
         fn interner_resolves_name_handles() {
             let g = build_index_graph();
-            assert_eq!(g.frozen.interner().resolve(g.h_parse),  "parse");
+            assert_eq!(g.frozen.interner().resolve(g.h_parse), "parse");
             assert_eq!(g.frozen.interner().resolve(g.h_render), "render");
             assert_eq!(g.frozen.interner().resolve(g.h_config), "Config");
         }

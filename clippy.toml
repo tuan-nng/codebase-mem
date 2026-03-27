@@ -1,0 +1,7 @@
+msrv = "1.80"
+cognitive-complexity-threshold = 25
+disallowed-names = ["foo", "bar", "baz", "quux", "cb", "dx"]
+too-many-arguments-threshold = 8
+type-complexity-threshold = 500
+single-char-binding-names-threshold = 4
+avoid-breaking-exported-api = true

@@ -119,7 +119,11 @@ impl StringInterner {
         let shard_bufs: Vec<Vec<u8>> = self
             .shards
             .into_iter()
-            .map(|m| m.into_inner().expect("StringInterner shard lock poisoned").buf)
+            .map(|m| {
+                m.into_inner()
+                    .expect("StringInterner shard lock poisoned")
+                    .buf
+            })
             .collect();
 
         // shard_start[i] is the global byte offset at which shard i begins.
@@ -302,7 +306,10 @@ mod tests {
                 .iter()
                 .filter(|s| !s.lock().unwrap().buf.is_empty())
                 .count();
-            assert!(non_empty > 1, "100 strings should land in more than one shard");
+            assert!(
+                non_empty > 1,
+                "100 strings should land in more than one shard"
+            );
         }
 
         #[test]
@@ -319,7 +326,10 @@ mod tests {
                         let interner = Arc::clone(&interner);
                         scope
                             .spawn(move || {
-                                shared.iter().map(|&s| interner.intern(s)).collect::<Vec<_>>()
+                                shared
+                                    .iter()
+                                    .map(|&s| interner.intern(s))
+                                    .collect::<Vec<_>>()
                             })
                             .join()
                             .unwrap()
@@ -356,7 +366,9 @@ mod tests {
 
         #[test]
         fn resolve_all_strings_after_many_interns() {
-            let words = ["the", "quick", "brown", "fox", "jumps", "over", "lazy", "dog"];
+            let words = [
+                "the", "quick", "brown", "fox", "jumps", "over", "lazy", "dog",
+            ];
             let interner = StringInterner::new();
             // Intern each word once; collect the unique handle per word.
             let mut word_to_raw: std::collections::HashMap<&str, InternedStr> =
