@@ -14,9 +14,13 @@
 //! | [`InternedStr`]    | `u32` | 4-byte handle into the string interner    |
 //! | [`StringInterner`] | —     | Concurrent 16-shard string interner       |
 //! | [`FrozenInterner`] | —     | Compacted single-buffer string table      |
+//! | [`Language`]       | enum  | Programming language by file extension  |
 
 mod interner;
 pub use interner::{FrozenInterner, StringInterner};
+
+mod language;
+pub use language::{from_extension, from_path, Language};
 
 use std::fmt;
 

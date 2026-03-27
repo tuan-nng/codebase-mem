@@ -1,0 +1,13 @@
+[package]
+name = "ci-discover"
+version = "0.1.0"
+edition = "2021"
+description = "Gitignore-aware file discovery with language classification for the Codebase Intelligence Engine"
+
+[dependencies]
+ci-core = { path = "../ci-core" }
+ignore = "0.4"
+rayon = "1.10"
+
+[dev-dependencies]
+tempfile = "3"
