@@ -1,0 +1,13 @@
+[package]
+name = "ci-graph"
+version = "0.1.0"
+edition = "2021"
+description = "Mutable and frozen graph structures for the Codebase Intelligence Engine"
+
+[dependencies]
+ci-core = { path = "../ci-core" }
+parking_lot = "0.12"
+rayon = "1.10"
+
+[dev-dependencies]
+ci-core = { path = "../ci-core" }
