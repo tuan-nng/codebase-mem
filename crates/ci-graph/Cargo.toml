@@ -16,6 +16,13 @@ memmap2 = "0.9"
 xxhash-rust = { version = "0.8", features = ["xxh3"] }
 thiserror = "2"
 
+[[bench]]
+name = "benchmarks"
+harness = false
+
 [dev-dependencies]
 ci-core = { path = "../ci-core" }
 tempfile = "3"
+criterion = "0.5"
+num_cpus = "1"
+fastrand = "2"
