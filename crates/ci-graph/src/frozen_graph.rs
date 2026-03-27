@@ -1,10 +1,20 @@
-//! Frozen immutable graph with CSR adjacency.
+//! Frozen immutable graph with CSR adjacency and secondary indexes.
 //!
 //! E1-4 implements: sort edges by source NodeId, build CSR offset arrays
 //! (forward + reverse), move (not copy) SoA arrays from MutableGraph,
 //! phased teardown of edge vectors.
+//!
+//! E1-5 adds secondary indexes built during `freeze()`:
+//! - `[RoaringBitmap; NodeLabel::COUNT]` — one bitmap per label for O(1) filtering
+//! - `HashMap<InternedStr, NodeId>` — qualified-name to node lookup
+//! - `HashMap<InternedStr, Vec<NodeId>>` — file path to nodes lookup
+//! - `fst::Map` + side-table — bare-name FST for prefix/regex/fuzzy search (E4-1)
 
-use ci_core::{EdgeType, InternedStr, NodeId, NodeLabel};
+use std::collections::HashMap;
+
+use ci_core::{EdgeType, FrozenInterner, InternedStr, NodeId, NodeLabel};
+use roaring::RoaringBitmap;
+use smallvec::SmallVec;
 
 /// An immutable graph with CSR (Compressed Sparse Row) adjacency representation.
 ///
@@ -62,6 +72,28 @@ pub struct FrozenGraph {
     rev_edge_sources: Vec<NodeId>,
     /// Edge type of each incoming edge, parallel to `rev_edge_sources`.
     rev_edge_types: Vec<EdgeType>,
+
+    // ── Secondary indexes (E1-5) ─────────────────────────────────────────────
+
+    /// String interner — source of truth for resolving `InternedStr` handles.
+    interner: FrozenInterner,
+    /// One `RoaringBitmap` per `NodeLabel` variant. `label_index[label as usize]`
+    /// gives the set of all `NodeId`s (as `u32`) with that label.
+    label_index: Box<[RoaringBitmap; NodeLabel::COUNT]>,
+    /// Qualified-name → `NodeId` lookup. The hottest query path.
+    /// Last write wins when multiple nodes share a name handle (same QN string).
+    qn_index: HashMap<InternedStr, NodeId>,
+    /// File path → list of `NodeId`s. All nodes whose `node_file` equals the key.
+    file_index: HashMap<InternedStr, Vec<NodeId>>,
+    /// FST over all distinct bare symbol names in lexicographic order.
+    /// Each entry maps `name_bytes → slot_index` into `bare_name_nodes`.
+    /// Search methods (prefix, regex, fuzzy) are implemented in E4-1.
+    bare_name_fst: fst::Map<Vec<u8>>,
+    /// Side-table for the bare-name FST. `bare_name_nodes[slot]` holds all
+    /// `NodeId`s whose symbol name resolves to the same string.
+    /// `SmallVec<[NodeId; 1]>` avoids heap allocation for the common case where
+    /// a name is unique.
+    bare_name_nodes: Vec<SmallVec<[NodeId; 1]>>,
 }
 
 // ── Construction ────────────────────────────────────────────────────────────
@@ -187,6 +219,58 @@ impl FrozenGraph {
     }
 }
 
+impl FrozenGraph {
+    // ── Secondary index accessors (E1-5) ─────────────────────────────────────
+
+    /// Returns the string interner for resolving `InternedStr` handles.
+    #[inline]
+    pub fn interner(&self) -> &FrozenInterner {
+        &self.interner
+    }
+
+    /// Returns the `RoaringBitmap` of all node IDs with the given label.
+    #[inline]
+    pub fn nodes_with_label(&self, label: NodeLabel) -> &RoaringBitmap {
+        &self.label_index[label as usize]
+    }
+
+    /// Returns the `NodeId` for the given qualified-name handle, if any.
+    ///
+    /// # Collision policy
+    /// If multiple nodes share the same `InternedStr` handle (i.e. the same QN
+    /// string), the node with the **highest `NodeId`** is returned (last-insert
+    /// wins in the ascending-order build loop inside `freeze()`). Callers that
+    /// need all nodes with a given name should use [`nodes_with_label`] +
+    /// [`nodes_in_file`] or iterate the FST side-table instead.
+    #[inline]
+    pub fn lookup_qn(&self, name: InternedStr) -> Option<NodeId> {
+        self.qn_index.get(&name).copied()
+    }
+
+    /// Returns all nodes belonging to the file with the given path handle.
+    #[inline]
+    pub fn nodes_in_file(&self, file: InternedStr) -> &[NodeId] {
+        self.file_index.get(&file).map_or(&[], Vec::as_slice)
+    }
+
+    /// Returns the raw FST over all distinct symbol names.
+    /// Each FST value is a slot index into [`bare_name_nodes`].
+    /// Search methods (prefix, regex, fuzzy) are implemented in E4-1.
+    #[inline]
+    pub fn bare_name_fst(&self) -> &fst::Map<Vec<u8>> {
+        &self.bare_name_fst
+    }
+
+    /// Returns all `NodeId`s whose symbol name maps to `slot` in the FST.
+    ///
+    /// # Panics
+    /// Panics if `slot` is out of range (use the value returned by the FST).
+    #[inline]
+    pub fn bare_name_nodes(&self, slot: u64) -> &[NodeId] {
+        &self.bare_name_nodes[slot as usize]
+    }
+}
+
 // ── Freeze logic (lives on MutableGraph) ─────────────────────────────────────
 
 impl super::MutableGraph {
@@ -194,37 +278,49 @@ impl super::MutableGraph {
     ///
     /// # Algorithm
     ///
-    /// 1. Collect edges (source, target, type) from the lock-free append buffers
+    /// 1. Consume `self` via `into_parts()` — moves all SoA Vecs out of their
+    ///    Mutexes in O(1) without cloning
     /// 2. Sort edges by source `NodeId` (ascending), then by target
     /// 3. Build forward CSR: compute `forward_offsets`, populate edge target/type arrays
     /// 4. Build reverse CSR: count incoming edges per node, compute `rev_offsets`,
     ///    populate `rev_edge_sources` and `rev_edge_types`
-    /// 5. Move node SoA arrays out of `self` (no copy — ownership transfers)
-    /// 6. Drop edge SoA arrays from `self` (phased teardown: done before any
-    ///    secondary index construction in E1-5)
+    /// 5. Drop the scratch `edges` Vec (phased teardown: releases memory before
+    ///    secondary index construction to bound peak memory to ~1.3x final size)
+    /// 6. Build label bitmaps: one `RoaringBitmap` per `NodeLabel` variant
+    /// 7. Build QN index: `HashMap<InternedStr, NodeId>` for qualified-name lookup
+    /// 8. Build file index: `HashMap<InternedStr, Vec<NodeId>>` for file → nodes
+    /// 9. Build FST bare-name index: sort names, group duplicates into side-table,
+    ///    write sorted `(name, slot)` pairs into `fst::MapBuilder`
     ///
     /// # Complexity
     ///
     /// - Sorting: O(E log E) where E = edge count
     /// - CSR build: O(E + N) where N = node count
+    /// - FST build: O(N log N) for the name sort
     /// - Memory: nodes + edges + CSR offsets (approximately 1.3x final size during build)
     ///
     /// # Panics
     ///
     /// Panics if `node_count` exceeds `u32::MAX` (not expected).
-    pub fn freeze(self) -> FrozenGraph {
-        let node_count = self.node_count() as usize;
+    pub fn freeze(self, interner: FrozenInterner) -> FrozenGraph {
+        // ── Step 1: Consume self, moving all SoA Vecs out without cloning ─────
+        let (
+            node_labels,
+            node_names,
+            node_files,
+            node_lines,
+            node_columns,
+            edge_sources,
+            edge_targets,
+            edge_types,
+        ) = self.into_parts();
 
-        // ── Step 1: Collect edges ──────────────────────────────────────────────
-        // Collect all edges into a single owned Vec for sorting.
-        let sources = self.edge_sources();
-        let targets = self.edge_targets();
-        let types = self.edge_types();
+        let node_count = node_labels.len();
 
-        let mut edges: Vec<(u32, NodeId, EdgeType)> = sources
+        let mut edges: Vec<(u32, NodeId, EdgeType)> = edge_sources
             .into_iter()
-            .zip(targets.into_iter())
-            .zip(types.into_iter())
+            .zip(edge_targets.into_iter())
+            .zip(edge_types.into_iter())
             .map(|((s, t), ty)| (s.0, t, ty))
             .collect();
 
@@ -241,12 +337,32 @@ impl super::MutableGraph {
         let (rev_offsets, rev_edge_sources, rev_edge_types) =
             build_reverse_csr(&edges, node_count);
 
-        // ── Step 5: Move node SoA arrays ───────────────────────────────────────
-        let node_labels = self.node_labels();
-        let node_names = self.node_names();
-        let node_files = self.node_files();
-        let node_lines = self.node_lines();
-        let node_columns = self.node_columns();
+        // ── Step 5: Phased teardown (drop scratch edge Vec) ───────────────────
+        drop(edges);
+
+        // ── Step 6: Label bitmaps ──────────────────────────────────────────────
+        let mut label_bitmaps: [RoaringBitmap; NodeLabel::COUNT] =
+            std::array::from_fn(|_| RoaringBitmap::new());
+        for (idx, &label) in node_labels.iter().enumerate() {
+            label_bitmaps[label as usize].insert(idx as u32);
+        }
+        let label_index = Box::new(label_bitmaps);
+
+        // ── Step 7: QN index ──────────────────────────────────────────────────
+        let mut qn_index = HashMap::with_capacity(node_names.len());
+        for (idx, &name_handle) in node_names.iter().enumerate() {
+            qn_index.insert(name_handle, NodeId(idx as u32));
+        }
+
+        // ── Step 8: File index ─────────────────────────────────────────────────
+        let mut file_index: HashMap<InternedStr, Vec<NodeId>> = HashMap::new();
+        for (idx, &file_handle) in node_files.iter().enumerate() {
+            file_index.entry(file_handle).or_default().push(NodeId(idx as u32));
+        }
+
+        // ── Step 9: FST bare-name index ────────────────────────────────────────
+        let (bare_name_fst, bare_name_nodes) =
+            build_bare_name_index(&node_names, &interner);
 
         FrozenGraph {
             node_labels,
@@ -260,6 +376,12 @@ impl super::MutableGraph {
             rev_offsets,
             rev_edge_sources,
             rev_edge_types,
+            interner,
+            label_index,
+            qn_index,
+            file_index,
+            bare_name_fst,
+            bare_name_nodes,
         }
     }
 }
@@ -368,13 +490,90 @@ fn build_reverse_csr(
     (offsets, sources, types)
 }
 
+// ── Secondary index builders ──────────────────────────────────────────────────
+
+/// Builds the bare-name FST and its side-table from the node name array.
+///
+/// Returns `(fst_map, side_table)` where:
+/// - `fst_map` maps each distinct resolved name string to a `u64` slot index
+/// - `side_table[slot]` holds all `NodeId`s whose name resolves to that string
+///
+/// `SmallVec<[NodeId; 1]>` avoids heap allocation for the common case where
+/// a name is unique across all nodes.
+///
+/// # Algorithm
+/// 1. Resolve every `InternedStr` handle to a `&str` via the interner
+/// 2. Sort `(string, NodeId)` pairs lexicographically by string
+/// 3. Group equal strings into slots; assign `slot_index` sequentially
+/// 4. Feed sorted `(bytes, slot_index)` pairs into `fst::MapBuilder`
+fn build_bare_name_index(
+    node_names: &[InternedStr],
+    interner: &FrozenInterner,
+) -> (fst::Map<Vec<u8>>, Vec<SmallVec<[NodeId; 1]>>) {
+    // 1. Collect (resolved string, NodeId) pairs.
+    let mut pairs: Vec<(&str, NodeId)> = node_names
+        .iter()
+        .enumerate()
+        .map(|(idx, &handle)| (interner.resolve(handle), NodeId(idx as u32)))
+        .collect();
+
+    // 2. Sort by string (byte-lexicographic — same order fst expects), then by
+    //    NodeId to guarantee stable output across runs.
+    pairs.sort_unstable_by(|(a, aid), (b, bid)| a.cmp(b).then(aid.cmp(bid)));
+
+    // 3. Group consecutive equal names, build side-table and FST entries.
+    let mut side_table: Vec<SmallVec<[NodeId; 1]>> = Vec::new();
+    let mut builder = fst::MapBuilder::memory();
+
+    let mut i = 0;
+    while i < pairs.len() {
+        let key = pairs[i].0;
+        let slot = side_table.len() as u64;
+        let mut group: SmallVec<[NodeId; 1]> = SmallVec::new();
+        while i < pairs.len() && pairs[i].0 == key {
+            group.push(pairs[i].1);
+            i += 1;
+        }
+        side_table.push(group);
+        // Keys are already in sorted order so this never fails.
+        builder
+            .insert(key, slot)
+            .expect("FST keys must be inserted in lexicographic order");
+    }
+
+    // 4. Finalise the FST.
+    let bytes = builder.into_inner().expect("FST construction failed");
+    let map = fst::Map::new(bytes).expect("FST bytes are invalid");
+    (map, side_table)
+}
+
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {
-    use ci_core::{EdgeType, InternedStr, NodeId, NodeLabel};
+    use ci_core::{EdgeType, FrozenInterner, InternedStr, NodeId, NodeLabel, StringInterner};
 
     use crate::{FrozenGraph, MutableGraph};
+
+    // ── Test helpers ──────────────────────────────────────────────────────────
+
+    /// Interns `strings` into a fresh `StringInterner`, compacts it, and returns
+    /// `(FrozenInterner, remapped_handles)` in the same order as `strings`.
+    /// (Mirrors the `build` helper in `ci-core/src/interner.rs` tests; kept separate
+    /// because test helpers cannot be shared across crates without a test-utils crate.)
+    fn make_interner(strings: &[&str]) -> (FrozenInterner, Vec<InternedStr>) {
+        let si = StringInterner::new();
+        let raw: Vec<InternedStr> = strings.iter().map(|s| si.intern(s)).collect();
+        let (fi, remap) = si.compact();
+        (fi, raw.into_iter().map(|h| remap(h)).collect())
+    }
+
+    /// Returns an empty `FrozenInterner` (no strings interned).
+    /// Use only for graphs that have zero nodes (so the FST is never populated).
+    fn empty_interner() -> FrozenInterner {
+        let (fi, _) = StringInterner::new().compact();
+        fi
+    }
 
     // ── FrozenGraph basic properties ─────────────────────────────────────────
 
@@ -384,29 +583,31 @@ mod tests {
         #[test]
         fn empty_graph_has_zero_nodes_and_edges() {
             let mutable = MutableGraph::new();
-            let frozen = mutable.freeze();
+            let frozen = mutable.freeze(empty_interner());
             assert_eq!(frozen.node_count(), 0);
             assert_eq!(frozen.edge_count(), 0);
         }
 
         #[test]
         fn node_count_matches_added_nodes() {
+            let (interner, handles) = make_interner(&["file", "MyClass", "src/a.rs"]);
             let mutable = MutableGraph::new();
-            mutable.add_node(NodeLabel::File, InternedStr(0), InternedStr(0), 0, 0);
-            mutable.add_node(NodeLabel::Class, InternedStr(1), InternedStr(0), 0, 0);
-            let frozen = mutable.freeze();
+            mutable.add_node(NodeLabel::File, handles[0], handles[2], 0, 0);
+            mutable.add_node(NodeLabel::Class, handles[1], handles[2], 0, 0);
+            let frozen = mutable.freeze(interner);
             assert_eq!(frozen.node_count(), 2);
         }
 
         #[test]
         fn edge_count_matches_added_edges() {
+            let (interner, handles) = make_interner(&["file", "MyClass", "src/a.rs"]);
             let mutable = MutableGraph::new();
-            let n0 = mutable.add_node(NodeLabel::File, InternedStr(0), InternedStr(0), 0, 0);
-            let n1 = mutable.add_node(NodeLabel::Class, InternedStr(1), InternedStr(0), 0, 0);
+            let n0 = mutable.add_node(NodeLabel::File, handles[0], handles[2], 0, 0);
+            let n1 = mutable.add_node(NodeLabel::Class, handles[1], handles[2], 0, 0);
             mutable.add_edge(n0, n1, EdgeType::Contains);
             mutable.add_edge(n0, n1, EdgeType::Imports);
             mutable.add_edge(n1, n0, EdgeType::Calls);
-            let frozen = mutable.freeze();
+            let frozen = mutable.freeze(interner);
             assert_eq!(frozen.edge_count(), 3);
         }
     }
@@ -416,19 +617,42 @@ mod tests {
     mod node_data_round_trip {
         use super::*;
 
-        fn build_three_nodes() -> (MutableGraph, Vec<NodeId>) {
+        struct ThreeNodes {
+            mutable: MutableGraph,
+            ids: Vec<NodeId>,
+            interner: FrozenInterner,
+            name_handles: [InternedStr; 3],
+            file_handles: [InternedStr; 2],
+        }
+
+        fn build_three_nodes() -> ThreeNodes {
+            let si = StringInterner::new();
+            let rh_proj  = si.intern("my_project");
+            let rh_file  = si.intern("main.rs");
+            let rh_class = si.intern("MyClass");
+            let rh_root  = si.intern("/root");
+            let rh_src   = si.intern("/src");
+            let (fi, remap) = si.compact();
+            let [h_proj, h_file, h_class, h_root, h_src] =
+                [rh_proj, rh_file, rh_class, rh_root, rh_src].map(|h| remap(h));
+
             let mutable = MutableGraph::new();
-            let n0 =
-                mutable.add_node(NodeLabel::Project, InternedStr(100), InternedStr(200), 1, 1);
-            let n1 = mutable.add_node(NodeLabel::File, InternedStr(101), InternedStr(201), 10, 5);
-            let n2 = mutable.add_node(NodeLabel::Class, InternedStr(102), InternedStr(201), 20, 3);
-            (mutable, vec![n0, n1, n2])
+            let n0 = mutable.add_node(NodeLabel::Project, h_proj,  h_root, 1,  1);
+            let n1 = mutable.add_node(NodeLabel::File,    h_file,  h_src,  10, 5);
+            let n2 = mutable.add_node(NodeLabel::Class,   h_class, h_src,  20, 3);
+            ThreeNodes {
+                mutable,
+                ids: vec![n0, n1, n2],
+                interner: fi,
+                name_handles: [h_proj, h_file, h_class],
+                file_handles: [h_root, h_src],
+            }
         }
 
         #[test]
         fn node_label_round_trips() {
-            let (mutable, ids) = build_three_nodes();
-            let frozen = mutable.freeze();
+            let ThreeNodes { mutable, ids, interner, .. } = build_three_nodes();
+            let frozen = mutable.freeze(interner);
 
             assert_eq!(frozen.node_label(ids[0]), NodeLabel::Project);
             assert_eq!(frozen.node_label(ids[1]), NodeLabel::File);
@@ -437,28 +661,28 @@ mod tests {
 
         #[test]
         fn node_name_round_trips() {
-            let (mutable, ids) = build_three_nodes();
-            let frozen = mutable.freeze();
+            let ThreeNodes { mutable, ids, interner, name_handles, .. } = build_three_nodes();
+            let frozen = mutable.freeze(interner);
 
-            assert_eq!(frozen.node_name(ids[0]), InternedStr(100));
-            assert_eq!(frozen.node_name(ids[1]), InternedStr(101));
-            assert_eq!(frozen.node_name(ids[2]), InternedStr(102));
+            assert_eq!(frozen.node_name(ids[0]), name_handles[0]);
+            assert_eq!(frozen.node_name(ids[1]), name_handles[1]);
+            assert_eq!(frozen.node_name(ids[2]), name_handles[2]);
         }
 
         #[test]
         fn node_file_round_trips() {
-            let (mutable, ids) = build_three_nodes();
-            let frozen = mutable.freeze();
+            let ThreeNodes { mutable, ids, interner, file_handles, .. } = build_three_nodes();
+            let frozen = mutable.freeze(interner);
 
-            assert_eq!(frozen.node_file(ids[0]), InternedStr(200));
-            assert_eq!(frozen.node_file(ids[1]), InternedStr(201));
-            assert_eq!(frozen.node_file(ids[2]), InternedStr(201));
+            assert_eq!(frozen.node_file(ids[0]), file_handles[0]);
+            assert_eq!(frozen.node_file(ids[1]), file_handles[1]);
+            assert_eq!(frozen.node_file(ids[2]), file_handles[1]);
         }
 
         #[test]
         fn node_line_round_trips() {
-            let (mutable, ids) = build_three_nodes();
-            let frozen = mutable.freeze();
+            let ThreeNodes { mutable, ids, interner, .. } = build_three_nodes();
+            let frozen = mutable.freeze(interner);
 
             assert_eq!(frozen.node_line(ids[0]), 1);
             assert_eq!(frozen.node_line(ids[1]), 10);
@@ -467,8 +691,8 @@ mod tests {
 
         #[test]
         fn node_column_round_trips() {
-            let (mutable, ids) = build_three_nodes();
-            let frozen = mutable.freeze();
+            let ThreeNodes { mutable, ids, interner, .. } = build_three_nodes();
+            let frozen = mutable.freeze(interner);
 
             assert_eq!(frozen.node_column(ids[0]), 1);
             assert_eq!(frozen.node_column(ids[1]), 5);
@@ -482,16 +706,17 @@ mod tests {
         use super::*;
 
         fn build_simple_graph() -> FrozenGraph {
+            let (interner, handles) = make_interner(&["file", "MyClass", "render", "src/a.rs"]);
             let mutable = MutableGraph::new();
-            let n0 = mutable.add_node(NodeLabel::File, InternedStr(0), InternedStr(0), 0, 0);
-            let n1 = mutable.add_node(NodeLabel::Class, InternedStr(1), InternedStr(0), 0, 0);
-            let n2 = mutable.add_node(NodeLabel::Method, InternedStr(2), InternedStr(0), 0, 0);
+            let n0 = mutable.add_node(NodeLabel::File,   handles[0], handles[3], 0, 0);
+            let n1 = mutable.add_node(NodeLabel::Class,  handles[1], handles[3], 0, 0);
+            let n2 = mutable.add_node(NodeLabel::Method, handles[2], handles[3], 0, 0);
 
             mutable.add_edge(n0, n1, EdgeType::Contains);
             mutable.add_edge(n0, n2, EdgeType::Contains);
             mutable.add_edge(n1, n2, EdgeType::Calls);
 
-            mutable.freeze()
+            mutable.freeze(interner)
         }
 
         #[test]
@@ -573,16 +798,17 @@ mod tests {
         use super::*;
 
         fn build_simple_graph() -> FrozenGraph {
+            let (interner, handles) = make_interner(&["file", "MyClass", "render", "src/a.rs"]);
             let mutable = MutableGraph::new();
-            let n0 = mutable.add_node(NodeLabel::File, InternedStr(0), InternedStr(0), 0, 0);
-            let n1 = mutable.add_node(NodeLabel::Class, InternedStr(1), InternedStr(0), 0, 0);
-            let n2 = mutable.add_node(NodeLabel::Method, InternedStr(2), InternedStr(0), 0, 0);
+            let n0 = mutable.add_node(NodeLabel::File,   handles[0], handles[3], 0, 0);
+            let n1 = mutable.add_node(NodeLabel::Class,  handles[1], handles[3], 0, 0);
+            let n2 = mutable.add_node(NodeLabel::Method, handles[2], handles[3], 0, 0);
 
             mutable.add_edge(n0, n1, EdgeType::Contains);
             mutable.add_edge(n0, n2, EdgeType::Contains);
             mutable.add_edge(n1, n2, EdgeType::Calls);
 
-            mutable.freeze()
+            mutable.freeze(interner)
         }
 
         #[test]
@@ -665,11 +891,12 @@ mod tests {
 
         #[test]
         fn self_loop_appears_in_forward_and_reverse() {
+            let (interner, handles) = make_interner(&["recurse", "src/a.rs"]);
             let mutable = MutableGraph::new();
-            let n = mutable.add_node(NodeLabel::Method, InternedStr(0), InternedStr(0), 0, 0);
+            let n = mutable.add_node(NodeLabel::Method, handles[0], handles[1], 0, 0);
             mutable.add_edge(n, n, EdgeType::Calls);
 
-            let frozen = mutable.freeze();
+            let frozen = mutable.freeze(interner);
 
             let fwd = frozen.forward_edges(n).collect::<Vec<_>>();
             assert_eq!(fwd.len(), 1);
@@ -688,38 +915,52 @@ mod tests {
     mod disconnected_nodes {
         use super::*;
 
-        fn build_with_isolated_node() -> FrozenGraph {
+        struct IsolatedGraph {
+            frozen: FrozenGraph,
+            isolated_name: InternedStr,
+        }
+
+        fn build_with_isolated_node() -> IsolatedGraph {
+            let si = StringInterner::new();
+            let rh_file = si.intern("main.rs");
+            let rh_class = si.intern("Config");
+            let rh_fn = si.intern("isolated_fn");
+            let rh_src = si.intern("src/");
+            let (fi, remap) = si.compact();
+            let [h_file, h_class, h_fn, h_src] =
+                [rh_file, rh_class, rh_fn, rh_src].map(|h| remap(h));
+
             let mutable = MutableGraph::new();
             // Node 0: connected
-            let n0 = mutable.add_node(NodeLabel::File, InternedStr(0), InternedStr(0), 0, 0);
-            let n1 = mutable.add_node(NodeLabel::Class, InternedStr(1), InternedStr(0), 0, 0);
+            let n0 = mutable.add_node(NodeLabel::File,     h_file,  h_src, 0, 0);
+            let n1 = mutable.add_node(NodeLabel::Class,    h_class, h_src, 0, 0);
             // Node 2: isolated (no edges)
-            mutable.add_node(NodeLabel::Function, InternedStr(2), InternedStr(0), 0, 0);
+            mutable.add_node(NodeLabel::Function, h_fn, h_src, 0, 0);
 
             mutable.add_edge(n0, n1, EdgeType::Contains);
 
-            mutable.freeze()
+            IsolatedGraph { frozen: mutable.freeze(fi), isolated_name: h_fn }
         }
 
         #[test]
         fn isolated_node_has_no_outgoing_edges() {
-            let frozen = build_with_isolated_node();
+            let IsolatedGraph { frozen, .. } = build_with_isolated_node();
             let range = frozen.forward_edge_range(NodeId(2));
             assert_eq!(range.len(), 0);
         }
 
         #[test]
         fn isolated_node_has_no_incoming_edges() {
-            let frozen = build_with_isolated_node();
+            let IsolatedGraph { frozen, .. } = build_with_isolated_node();
             let range = frozen.reverse_edge_range(NodeId(2));
             assert_eq!(range.len(), 0);
         }
 
         #[test]
         fn isolated_node_data_still_accessible() {
-            let frozen = build_with_isolated_node();
+            let IsolatedGraph { frozen, isolated_name } = build_with_isolated_node();
             assert_eq!(frozen.node_label(NodeId(2)), NodeLabel::Function);
-            assert_eq!(frozen.node_name(NodeId(2)), InternedStr(2));
+            assert_eq!(frozen.node_name(NodeId(2)), isolated_name);
         }
     }
 
@@ -729,20 +970,23 @@ mod tests {
         use super::*;
 
         fn build_multi_target_graph() -> FrozenGraph {
+            let (interner, h) = make_interner(&[
+                "file", "MyClass", "render", "parse", "count", "score", "src/a.rs",
+            ]);
             let mutable = MutableGraph::new();
-            let n0 = mutable.add_node(NodeLabel::File, InternedStr(0), InternedStr(0), 0, 0);
-            mutable.add_node(NodeLabel::Class, InternedStr(1), InternedStr(0), 0, 0);
-            mutable.add_node(NodeLabel::Method, InternedStr(2), InternedStr(0), 0, 0);
-            mutable.add_node(NodeLabel::Function, InternedStr(3), InternedStr(0), 0, 0);
-            mutable.add_node(NodeLabel::Variable, InternedStr(4), InternedStr(0), 0, 0);
-            mutable.add_node(NodeLabel::Field, InternedStr(5), InternedStr(0), 0, 0);
+            let n0 = mutable.add_node(NodeLabel::File,     h[0], h[6], 0, 0);
+            mutable.add_node(NodeLabel::Class,    h[1], h[6], 0, 0);
+            mutable.add_node(NodeLabel::Method,   h[2], h[6], 0, 0);
+            mutable.add_node(NodeLabel::Function, h[3], h[6], 0, 0);
+            mutable.add_node(NodeLabel::Variable, h[4], h[6], 0, 0);
+            mutable.add_node(NodeLabel::Field,    h[5], h[6], 0, 0);
 
             // Add edges from n0 to several other nodes.
             mutable.add_edge(n0, NodeId(5), EdgeType::Contains); // target 5
-            mutable.add_edge(n0, NodeId(3), EdgeType::Calls); // target 3
-            mutable.add_edge(n0, NodeId(1), EdgeType::Imports); // target 1
+            mutable.add_edge(n0, NodeId(3), EdgeType::Calls);    // target 3
+            mutable.add_edge(n0, NodeId(1), EdgeType::Imports);  // target 1
 
-            mutable.freeze()
+            mutable.freeze(interner)
         }
 
         #[test]
@@ -768,16 +1012,27 @@ mod tests {
 
         #[test]
         fn freeze_handles_large_graph() {
-            let mutable = MutableGraph::new();
             let node_count = 1000usize;
             let edges_per_node = 5usize;
+
+            // Build an interner with distinct names "fn0".."fn999" plus a file handle.
+            let si = StringInterner::new();
+            let name_handles: Vec<InternedStr> = (0..node_count)
+                .map(|i| si.intern(&format!("fn{}", i)))
+                .collect();
+            let file_raw = si.intern("src/large.rs");
+            let (fi, remap) = si.compact();
+            let name_handles: Vec<InternedStr> = name_handles.iter().map(|&h| remap(h)).collect();
+            let file_handle = remap(file_raw);
+
+            let mutable = MutableGraph::new();
 
             // Add nodes
             for i in 0..node_count {
                 mutable.add_node(
                     NodeLabel::Function,
-                    InternedStr(i as u32),
-                    InternedStr(0),
+                    name_handles[i],
+                    file_handle,
                     i as u32,
                     0,
                 );
@@ -792,7 +1047,7 @@ mod tests {
                 }
             }
 
-            let frozen = mutable.freeze();
+            let frozen = mutable.freeze(fi);
             assert_eq!(frozen.node_count(), node_count);
             assert_eq!(frozen.edge_count(), node_count * edges_per_node);
 
@@ -809,6 +1064,225 @@ mod tests {
                 let edges = frozen.forward_edges(NodeId(i as u32)).collect::<Vec<_>>();
                 assert_eq!(edges.len(), edges_per_node);
             }
+        }
+    }
+
+    // ── Secondary indexes (E1-5) ──────────────────────────────────────────────
+
+    mod secondary_indexes {
+        use super::*;
+
+        /// Builds a graph with 4 nodes across 2 files and 3 distinct labels.
+        ///
+        /// Nodes:
+        ///   0 — File      "src/a.rs"    file="src/a.rs"
+        ///   1 — Function  "parse"       file="src/a.rs"
+        ///   2 — Function  "render"      file="src/b.rs"
+        ///   3 — Class     "Config"      file="src/b.rs"
+        struct IndexGraph {
+            frozen: FrozenGraph,
+            h_src_a: InternedStr,
+            h_src_b: InternedStr,
+            h_parse: InternedStr,
+            h_render: InternedStr,
+            h_config: InternedStr,
+        }
+
+        fn build_index_graph() -> IndexGraph {
+            let si = StringInterner::new();
+            let rh_file_a  = si.intern("src/a.rs");
+            let rh_file_b  = si.intern("src/b.rs");
+            let rh_src_a   = si.intern("src/a.rs");  // same as rh_file_a: deduped
+            let rh_src_b   = si.intern("src/b.rs");  // same as rh_file_b: deduped
+            let rh_parse   = si.intern("parse");
+            let rh_render  = si.intern("render");
+            let rh_config  = si.intern("Config");
+            let (fi, remap) = si.compact();
+            let [h_file_a, _h_file_b, h_src_a, h_src_b, h_parse, h_render, h_config] =
+                [rh_file_a, rh_file_b, rh_src_a, rh_src_b, rh_parse, rh_render, rh_config]
+                    .map(|h| remap(h));
+
+            let mutable = MutableGraph::new();
+            mutable.add_node(NodeLabel::File,     h_file_a, h_src_a, 1, 1);
+            mutable.add_node(NodeLabel::Function, h_parse,  h_src_a, 5, 1);
+            mutable.add_node(NodeLabel::Function, h_render, h_src_b, 3, 1);
+            mutable.add_node(NodeLabel::Class,    h_config, h_src_b, 1, 1);
+
+            IndexGraph {
+                frozen: mutable.freeze(fi),
+                h_src_a, h_src_b,
+                h_parse, h_render, h_config,
+            }
+        }
+
+        // ── Label bitmaps ─────────────────────────────────────────────────────
+
+        #[test]
+        fn label_bitmap_contains_correct_nodes() {
+            let g = build_index_graph();
+            let functions = g.frozen.nodes_with_label(NodeLabel::Function);
+            assert!(functions.contains(1)); // "parse"
+            assert!(functions.contains(2)); // "render"
+            assert!(!functions.contains(0)); // File node
+            assert!(!functions.contains(3)); // Class node
+        }
+
+        #[test]
+        fn label_bitmap_cardinalities_sum_to_node_count() {
+            let g = build_index_graph();
+            let total: u64 = (0..NodeLabel::COUNT)
+                .map(|i| {
+                    // SAFETY: i < COUNT so the cast is always a valid discriminant.
+                    let label: NodeLabel = unsafe { std::mem::transmute(i as u8) };
+                    g.frozen.nodes_with_label(label).len()
+                })
+                .sum();
+            assert_eq!(total as usize, g.frozen.node_count());
+        }
+
+        #[test]
+        fn empty_label_bitmap_has_zero_bits() {
+            let g = build_index_graph();
+            // No Trait nodes in our graph.
+            assert_eq!(g.frozen.nodes_with_label(NodeLabel::Trait).len(), 0);
+        }
+
+        // ── QN index ─────────────────────────────────────────────────────────
+
+        #[test]
+        fn lookup_qn_finds_existing_node() {
+            let g = build_index_graph();
+            assert_eq!(g.frozen.lookup_qn(g.h_parse),  Some(NodeId(1)));
+            assert_eq!(g.frozen.lookup_qn(g.h_render), Some(NodeId(2)));
+            assert_eq!(g.frozen.lookup_qn(g.h_config), Some(NodeId(3)));
+        }
+
+        #[test]
+        fn lookup_qn_returns_none_for_unknown_handle() {
+            let g = build_index_graph();
+            let absent = InternedStr(u32::MAX);
+            assert_eq!(g.frozen.lookup_qn(absent), None);
+        }
+
+        #[test]
+        fn lookup_qn_returns_highest_node_id_on_duplicate_name() {
+            // Two nodes share the same QN string. freeze() builds qn_index by
+            // iterating NodeId 0..N in order; HashMap::insert overwrites on
+            // duplicate, so the highest NodeId wins.
+            let si = StringInterner::new();
+            let rh_name = si.intern("do_thing");
+            let rh_file = si.intern("src/a.rs");
+            let (fi, remap) = si.compact();
+            let [h_name, h_file] = [rh_name, rh_file].map(|h| remap(h));
+
+            let mutable = MutableGraph::new();
+            mutable.add_node(NodeLabel::Function, h_name, h_file, 1, 1); // NodeId(0)
+            mutable.add_node(NodeLabel::Method,   h_name, h_file, 5, 1); // NodeId(1) — same QN
+            let frozen = mutable.freeze(fi);
+
+            assert_eq!(frozen.lookup_qn(h_name), Some(NodeId(1)));
+        }
+
+        // ── File index ────────────────────────────────────────────────────────
+
+        #[test]
+        fn nodes_in_file_returns_correct_set() {
+            let g = build_index_graph();
+            let in_a = g.frozen.nodes_in_file(g.h_src_a);
+            assert_eq!(in_a.len(), 2);
+            assert!(in_a.contains(&NodeId(0)));
+            assert!(in_a.contains(&NodeId(1)));
+
+            let in_b = g.frozen.nodes_in_file(g.h_src_b);
+            assert_eq!(in_b.len(), 2);
+            assert!(in_b.contains(&NodeId(2)));
+            assert!(in_b.contains(&NodeId(3)));
+        }
+
+        #[test]
+        fn nodes_in_file_returns_empty_for_unknown_file() {
+            let g = build_index_graph();
+            let absent = InternedStr(u32::MAX);
+            assert_eq!(g.frozen.nodes_in_file(absent), &[] as &[NodeId]);
+        }
+
+        // ── FST bare-name index ───────────────────────────────────────────────
+
+        #[test]
+        fn fst_contains_all_distinct_names() {
+            let g = build_index_graph();
+            let fst = g.frozen.bare_name_fst();
+            // All 4 distinct name strings must be present.
+            assert!(fst.get("src/a.rs").is_some()); // h_file_a
+            assert!(fst.get("parse").is_some());
+            assert!(fst.get("render").is_some());
+            assert!(fst.get("Config").is_some());
+        }
+
+        #[test]
+        fn fst_slot_resolves_to_correct_node() {
+            let g = build_index_graph();
+            let fst = g.frozen.bare_name_fst();
+
+            let slot = fst.get("parse").expect("'parse' must be in FST");
+            let nodes = g.frozen.bare_name_nodes(slot);
+            assert_eq!(nodes, &[NodeId(1)]);
+        }
+
+        #[test]
+        fn fst_absent_key_returns_none() {
+            let g = build_index_graph();
+            assert!(g.frozen.bare_name_fst().get("nonexistent_symbol").is_none());
+        }
+
+        #[test]
+        fn fst_side_table_groups_duplicate_names() {
+            // Two nodes with the same bare name "new".
+            let si = StringInterner::new();
+            let rh_new1  = si.intern("new");
+            let rh_new2  = si.intern("new"); // same string — deduped in interner
+            let rh_file  = si.intern("src/c.rs");
+            let (fi, remap) = si.compact();
+            let [h_new1, h_new2, h_file] = [rh_new1, rh_new2, rh_file].map(|h| remap(h));
+            // Both handles must be equal since the string is deduped.
+            assert_eq!(h_new1, h_new2);
+
+            let mutable = MutableGraph::new();
+            mutable.add_node(NodeLabel::Function, h_new1, h_file, 1, 1);
+            mutable.add_node(NodeLabel::Method,   h_new2, h_file, 5, 1);
+            let frozen = mutable.freeze(fi);
+
+            let fst  = frozen.bare_name_fst();
+            let slot = fst.get("new").expect("'new' must be in FST");
+            let nodes = frozen.bare_name_nodes(slot);
+            // Both NodeId(0) and NodeId(1) must appear under the same slot.
+            assert_eq!(nodes.len(), 2);
+            assert!(nodes.contains(&NodeId(0)));
+            assert!(nodes.contains(&NodeId(1)));
+        }
+
+        #[test]
+        fn fst_side_table_slot_count_equals_distinct_name_count() {
+            let g = build_index_graph();
+            // 4 distinct names: "src/a.rs", "parse", "render", "Config"
+            assert_eq!(g.frozen.bare_name_fst().len(), 4);
+        }
+
+        // ── Interner accessor ─────────────────────────────────────────────────
+
+        #[test]
+        fn interner_resolves_name_handles() {
+            let g = build_index_graph();
+            assert_eq!(g.frozen.interner().resolve(g.h_parse),  "parse");
+            assert_eq!(g.frozen.interner().resolve(g.h_render), "render");
+            assert_eq!(g.frozen.interner().resolve(g.h_config), "Config");
+        }
+
+        #[test]
+        fn interner_resolves_file_handles() {
+            let g = build_index_graph();
+            assert_eq!(g.frozen.interner().resolve(g.h_src_a), "src/a.rs");
+            assert_eq!(g.frozen.interner().resolve(g.h_src_b), "src/b.rs");
         }
     }
 }

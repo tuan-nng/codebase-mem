@@ -8,6 +8,9 @@ description = "Mutable and frozen graph structures for the Codebase Intelligence
 ci-core = { path = "../ci-core" }
 parking_lot = "0.12"
 rayon = "1.10"
+roaring = "0.10"
+fst = "0.4"
+smallvec = "1"
 
 [dev-dependencies]
 ci-core = { path = "../ci-core" }

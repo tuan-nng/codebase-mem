@@ -170,6 +170,32 @@ impl MutableGraph {
     pub fn edge_types(&self) -> Vec<EdgeType> {
         self.edge_types.lock().clone()
     }
+
+    /// Consume `self` and return all SoA arrays without cloning.
+    ///
+    /// Uses `Mutex::into_inner` to move the `Vec`s out of their mutexes in O(1).
+    /// Only called from `freeze()` which already owns `self` exclusively.
+    pub(crate) fn into_parts(self) -> (
+        Vec<NodeLabel>,   // node_labels
+        Vec<InternedStr>, // node_names
+        Vec<InternedStr>, // node_files
+        Vec<u32>,         // node_lines
+        Vec<u32>,         // node_columns
+        Vec<NodeId>,      // edge_sources
+        Vec<NodeId>,      // edge_targets
+        Vec<EdgeType>,    // edge_types
+    ) {
+        (
+            self.node_labels.into_inner(),
+            self.node_names.into_inner(),
+            self.node_files.into_inner(),
+            self.node_lines.into_inner(),
+            self.node_columns.into_inner(),
+            self.edge_sources.into_inner(),
+            self.edge_targets.into_inner(),
+            self.edge_types.into_inner(),
+        )
+    }
 }
 
 impl Default for MutableGraph {

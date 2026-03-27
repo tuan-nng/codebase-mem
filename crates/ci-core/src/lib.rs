@@ -133,6 +133,36 @@ pub enum NodeLabel {
     Namespace,
 }
 
+impl NodeLabel {
+    /// Total number of variants. Used to size fixed arrays indexed by `label as usize`.
+    pub const COUNT: usize = 13;
+
+    /// Compile-time guard: the exhaustive match forces this constant to be updated
+    /// whenever a variant is added or removed. If you add a variant and this fails
+    /// to compile, update the match arm *and* increment `COUNT`.
+    const _COUNT_GUARD: () = {
+        let n: usize = match NodeLabel::Project {
+            NodeLabel::Project
+            | NodeLabel::Package
+            | NodeLabel::Directory
+            | NodeLabel::File
+            | NodeLabel::Class
+            | NodeLabel::Interface
+            | NodeLabel::Trait
+            | NodeLabel::Function
+            | NodeLabel::Method
+            | NodeLabel::TypeAlias
+            | NodeLabel::Variable
+            | NodeLabel::Field
+            | NodeLabel::Namespace => 13,
+        };
+        assert!(
+            n == NodeLabel::COUNT,
+            "NodeLabel::COUNT is out of sync with the actual variant count",
+        );
+    };
+}
+
 impl fmt::Display for NodeLabel {
     #[inline]
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
