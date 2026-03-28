@@ -1,0 +1,90 @@
+[package]
+name = "ci-parser"
+version = "0.1.0"
+edition = "2021"
+description = "Thread-local tree-sitter parser pool for the Codebase Intelligence Engine"
+
+[dependencies]
+ci-core = { path = "../ci-core" }
+tree-sitter = "0.26"
+tree-sitter-language = "0.1"
+
+# ── Grammar crates ────────────────────────────────────────────────────────────
+# All grammars are optional. Users enable them via feature flags below.
+# Versions must be compatible with tree-sitter 0.26.
+
+# Systems languages
+tree-sitter-rust       = { version = "0.24", optional = true }
+tree-sitter-c          = { version = "0.24", optional = true }
+tree-sitter-cpp       = { version = "0.23", optional = true }
+tree-sitter-go         = { version = "0.25", optional = true }
+
+# Web languages
+tree-sitter-javascript = { version = "0.23", optional = true }
+tree-sitter-typescript = { version = "0.23", optional = true }
+tree-sitter-html       = { version = "0.23", optional = true }
+tree-sitter-css        = { version = "0.25", optional = true }
+
+# Script languages
+tree-sitter-python     = { version = "0.25", optional = true }
+tree-sitter-bash       = { version = "0.25", optional = true }
+
+# JVM languages
+tree-sitter-java       = { version = "0.23", optional = true }
+tree-sitter-scala     = { version = "0.25", optional = true }
+tree-sitter-kotlin-ng = { version = "1.1", optional = true }
+
+# .NET / Mobile
+tree-sitter-c-sharp    = { version = "0.23", optional = true }
+tree-sitter-swift      = { version = "0.7", optional = true }
+
+# Config / data formats
+tree-sitter-json       = { version = "0.24", optional = true }
+tree-sitter-yaml       = { version = "0.7", optional = true }
+
+# Other
+tree-sitter-ruby       = { version = "0.23", optional = true }
+tree-sitter-php        = { version = "0.24", optional = true }
+tree-sitter-zig        = { version = "1.1", optional = true }
+
+[features]
+# ── Grammar families ──────────────────────────────────────────────────────────
+# Each grammar feature enables the corresponding tree-sitter-* crate.
+# `default = ["lang-all"]` compiles all 0.26-compatible grammars (19 total).
+default = ["lang-all"]
+
+lang-all = [
+    "tree-sitter-rust",
+    "tree-sitter-c",
+    "tree-sitter-cpp",
+    "tree-sitter-go",
+    "tree-sitter-javascript",
+    "tree-sitter-typescript",
+    "tree-sitter-html",
+    "tree-sitter-css",
+    "tree-sitter-python",
+    "tree-sitter-bash",
+    "tree-sitter-java",
+    "tree-sitter-scala",
+    "tree-sitter-kotlin-ng",
+    "tree-sitter-c-sharp",
+    "tree-sitter-swift",
+    "tree-sitter-json",
+    "tree-sitter-yaml",
+    "tree-sitter-ruby",
+    "tree-sitter-php",
+    "tree-sitter-zig",
+]
+
+lang-systems  = ["tree-sitter-rust", "tree-sitter-c", "tree-sitter-cpp", "tree-sitter-go"]
+lang-web      = ["tree-sitter-javascript", "tree-sitter-typescript", "tree-sitter-html", "tree-sitter-css"]
+lang-script   = ["tree-sitter-python", "tree-sitter-bash"]
+lang-jvm      = ["tree-sitter-java", "tree-sitter-scala", "tree-sitter-kotlin-ng"]
+lang-dotnet   = ["tree-sitter-c-sharp"]
+lang-mobile   = ["tree-sitter-swift"]
+lang-config   = ["tree-sitter-json", "tree-sitter-yaml"]
+lang-other    = ["tree-sitter-ruby", "tree-sitter-php", "tree-sitter-zig"]
+
+[dev-dependencies]
+ci-core = { path = "../ci-core" }
+tempfile = "3"
