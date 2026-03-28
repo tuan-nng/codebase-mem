@@ -12,12 +12,14 @@ use std::sync::OnceLock;
 use crate::lang_spec::LanguageSpec;
 use crate::Language;
 
+mod c;
+mod cpp;
+mod go;
+mod java;
+mod kotlin;
 mod python;
 mod rust;
-// mod go;       // TODO(E2-3): add Go spec
-// mod typescript; // TODO(E2-3): add TypeScript spec
-// mod java;       // TODO(E2-3): add Java spec
-// mod cpp;        // TODO(E2-3): add C++ spec
+mod typescript;
 
 /// Runtime check that a spec's node rules are sorted by ts_kind.
 /// Panics if the spec is misconfigured.
@@ -40,16 +42,22 @@ pub fn get_spec(lang: Language) -> Option<&'static LanguageSpec> {
     // Only initialize once. The assert! inside will panic on first use if misconfigured.
     if SPECS.get().is_none() {
         let mut m = std::collections::HashMap::new();
-        m.insert(Language::Rust, &rust::SPEC);
-        check_sorted(&rust::SPEC);
+        m.insert(Language::C, &c::SPEC);
+        check_sorted(&c::SPEC);
+        m.insert(Language::Cpp, &cpp::SPEC);
+        check_sorted(&cpp::SPEC);
+        m.insert(Language::Go, &go::SPEC);
+        check_sorted(&go::SPEC);
+        m.insert(Language::Java, &java::SPEC);
+        check_sorted(&java::SPEC);
+        m.insert(Language::Kotlin, &kotlin::SPEC);
+        check_sorted(&kotlin::SPEC);
         m.insert(Language::Python, &python::SPEC);
         check_sorted(&python::SPEC);
-        // Add new languages here:
-        // m.insert(Language::Go, &go::SPEC);
-        // check_sorted(&go::SPEC);
-        // m.insert(Language::TypeScript, &typescript::SPEC);
-        // m.insert(Language::Java, &java::SPEC);
-        // m.insert(Language::Cpp, &cpp::SPEC);
+        m.insert(Language::Rust, &rust::SPEC);
+        check_sorted(&rust::SPEC);
+        m.insert(Language::TypeScript, &typescript::SPEC);
+        check_sorted(&typescript::SPEC);
         SPECS.set(m).ok();
     }
 
