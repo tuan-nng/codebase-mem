@@ -22,6 +22,13 @@ pub use interner::{FrozenInterner, StringInterner};
 mod language;
 pub use language::{from_extension, from_path, Language};
 
+mod lang_spec;
+pub mod specs;
+pub use lang_spec::{
+    spec_for, EdgeRule, ExtractedEdge, ExtractedItem, ExtractedNode, LanguageSpec, NodeRule,
+    ScopeKey, ScopeSegment, TargetPattern,
+};
+
 use std::fmt;
 
 use rkyv::{Archive, Deserialize, Serialize};

@@ -57,10 +57,12 @@
 //! +-----------------------------+
 //! ```
 
+mod extractor;
 mod grammar;
 mod pool;
 
 pub use ci_core::Language;
+pub use extractor::extract;
 pub use pool::{ParseError, ParserPool};
 
 /// Parse `source` with the grammar for `lang`.
