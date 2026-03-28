@@ -1,0 +1,28 @@
+#!/bin/sh
+# pre-commit hook: runs format and clippy on staged Rust files
+#
+# Usage: symlink as .git/hooks/pre-commit
+#   ln -s ../../hooks/pre-commit .git/hooks/pre-commit
+
+set -e
+
+# Only run on staged Rust files
+STAGED_RUST=$(git diff --cached --name-only --diff-filter=ACM | grep -E '\.rs$' | head -20)
+
+if [ -z "$STAGED_RUST" ]; then
+    exit 0
+fi
+
+echo "pre-commit: checking Rust files..."
+
+# Format check
+echo "  fmt..."
+cargo fmt -- --check
+echo "  fmt: OK"
+
+# Clippy
+echo "  clippy..."
+cargo clippy --all-targets --all-features -- -D warnings
+echo "  clippy: OK"
+
+echo "pre-commit: all checks passed"

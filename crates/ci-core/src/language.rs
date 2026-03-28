@@ -49,7 +49,6 @@ pub enum Language {
 impl Language {
     /// Total number of variants including the `Unknown` sentinel.
     pub const COUNT: usize = 24;
-
 }
 
 /// Compile-time guard: adding a variant without updating `COUNT` is a hard error.

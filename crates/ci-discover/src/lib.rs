@@ -201,10 +201,7 @@ mod tests {
 
     #[test]
     fn finds_python_files() {
-        let dir = temp_project(&[
-            ("main.py", ""),
-            ("tests/test_main.py", ""),
-        ]);
+        let dir = temp_project(&[("main.py", ""), ("tests/test_main.py", "")]);
 
         let count = discover(dir.path(), DiscoverConfig::new())
             .filter(|f| f.language == Language::Python)
@@ -214,10 +211,7 @@ mod tests {
 
     #[test]
     fn finds_typescript_files() {
-        let dir = temp_project(&[
-            ("index.ts", ""),
-            ("Button.tsx", ""),
-        ]);
+        let dir = temp_project(&[("index.ts", ""), ("Button.tsx", "")]);
 
         let langs: Vec<_> = discover(dir.path(), DiscoverConfig::new())
             .map(|f| f.language)
@@ -228,10 +222,7 @@ mod tests {
 
     #[test]
     fn finds_go_files() {
-        let dir = temp_project(&[
-            ("main.go", ""),
-            ("server/server.go", ""),
-        ]);
+        let dir = temp_project(&[("main.go", ""), ("server/server.go", "")]);
 
         let count = discover(dir.path(), DiscoverConfig::new())
             .filter(|f| f.language == Language::Go)
@@ -241,10 +232,7 @@ mod tests {
 
     #[test]
     fn finds_java_files() {
-        let dir = temp_project(&[
-            ("Main.java", ""),
-            ("utils/Helper.java", ""),
-        ]);
+        let dir = temp_project(&[("Main.java", ""), ("utils/Helper.java", "")]);
 
         let count = discover(dir.path(), DiscoverConfig::new())
             .filter(|f| f.language == Language::Java)
@@ -290,11 +278,7 @@ mod tests {
 
     #[test]
     fn skips_unknown_extensions() {
-        let dir = temp_project(&[
-            ("data.json", ""),
-            ("blob.dat", ""),
-            ("image.png", ""),
-        ]);
+        let dir = temp_project(&[("data.json", ""), ("blob.dat", ""), ("image.png", "")]);
 
         let paths: Vec<_> = discover(dir.path(), DiscoverConfig::new())
             .map(|f| f.path.file_name().unwrap().to_string_lossy().into_owned())
@@ -307,11 +291,7 @@ mod tests {
 
     #[test]
     fn skips_files_without_extension() {
-        let dir = temp_project(&[
-            ("Makefile", ""),
-            ("script", ""),
-            ("main.rs", ""),
-        ]);
+        let dir = temp_project(&[("Makefile", ""), ("script", ""), ("main.rs", "")]);
 
         let paths: Vec<_> = discover(dir.path(), DiscoverConfig::new())
             .map(|f| f.path.file_name().unwrap().to_string_lossy().into_owned())
@@ -359,10 +339,7 @@ mod tests {
 
     #[test]
     fn include_hidden_files() {
-        let dir = temp_project(&[
-            ("src/main.rs", ""),
-            (".hidden.rs", ""),
-        ]);
+        let dir = temp_project(&[("src/main.rs", ""), (".hidden.rs", "")]);
 
         let paths: Vec<_> = discover(dir.path(), DiscoverConfig::new().include_hidden())
             .map(|f| f.path.file_name().unwrap().to_string_lossy().into_owned())
@@ -417,12 +394,9 @@ mod tests {
             ("src/deep/deep.rs", ""),
         ]);
 
-        let paths: Vec<_> = discover(
-            dir.path(),
-            DiscoverConfig::new().max_depth(Some(2)),
-        )
-        .map(|f| f.path.to_string_lossy().into_owned())
-        .collect();
+        let paths: Vec<_> = discover(dir.path(), DiscoverConfig::new().max_depth(Some(2)))
+            .map(|f| f.path.to_string_lossy().into_owned())
+            .collect();
 
         assert!(paths.iter().any(|p| p.ends_with("root.rs")));
         assert!(paths.iter().any(|p| p.ends_with("nested.rs")));
@@ -447,11 +421,7 @@ mod tests {
 
     #[test]
     fn parallel_iterator_returns_correct_languages() {
-        let dir = temp_project(&[
-            ("main.rs", ""),
-            ("main.py", ""),
-            ("main.go", ""),
-        ]);
+        let dir = temp_project(&[("main.rs", ""), ("main.py", ""), ("main.go", "")]);
 
         let files: Vec<_> = discover(dir.path(), DiscoverConfig::new()).collect();
 
@@ -485,9 +455,7 @@ mod tests {
 
     #[test]
     fn nested_directories() {
-        let dir = temp_project(&[
-            ("a/b/c/d/e.rs", ""),
-        ]);
+        let dir = temp_project(&[("a/b/c/d/e.rs", "")]);
 
         let count = discover(dir.path(), DiscoverConfig::new()).count();
         assert_eq!(count, 1);
@@ -495,11 +463,7 @@ mod tests {
 
     #[test]
     fn case_insensitive_extensions() {
-        let dir = temp_project(&[
-            ("main.RS", ""),
-            ("app.PY", ""),
-            ("Server.GO", ""),
-        ]);
+        let dir = temp_project(&[("main.RS", ""), ("app.PY", ""), ("Server.GO", "")]);
 
         let langs: Vec<_> = discover(dir.path(), DiscoverConfig::new())
             .map(|f| f.language)
@@ -512,9 +476,7 @@ mod tests {
 
     #[test]
     fn path_preserved() {
-        let dir = temp_project(&[
-            ("src/lib.rs", ""),
-        ]);
+        let dir = temp_project(&[("src/lib.rs", "")]);
 
         let files: Vec<_> = discover(dir.path(), DiscoverConfig::new()).collect();
         assert_eq!(files.len(), 1);

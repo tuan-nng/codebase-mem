@@ -86,10 +86,9 @@ pub fn get_language(lang: CoreLanguage) -> Option<tree_sitter_language::Language
         CoreLanguage::Zig => Some(tree_sitter_zig::LANGUAGE),
 
         // Languages with no grammar compiled in.
-        CoreLanguage::Toml
-        | CoreLanguage::Markdown
-        | CoreLanguage::Sql
-        | CoreLanguage::Unknown => None,
+        CoreLanguage::Toml | CoreLanguage::Markdown | CoreLanguage::Sql | CoreLanguage::Unknown => {
+            None
+        }
     }
 }
 

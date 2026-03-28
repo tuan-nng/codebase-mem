@@ -155,7 +155,8 @@ fn get_parser_mut(lang: CoreLanguage) -> Option<&'static mut tree_sitter::Parser
             // Race-free (single-threaded TLS): another call initialized it.
             return PARSERS.with(|cell| {
                 let mut parsers = cell.borrow_mut();
-                let ptr = parsers.get_mut(&lang).unwrap().as_mut().unwrap() as *mut tree_sitter::Parser;
+                let ptr =
+                    parsers.get_mut(&lang).unwrap().as_mut().unwrap() as *mut tree_sitter::Parser;
                 Some(unsafe { &mut *ptr })
             });
         }
@@ -184,8 +185,7 @@ mod tests {
     // ── ParserPool construction ────────────────────────────────────────────
 
     #[test]
-    fn pool_default_constructs() {
-        let _pool = ParserPool::default();
+    fn pool_new_is_empty() {
         let pool = ParserPool::new();
         assert_eq!(pool.cached_count(), 0);
     }
@@ -233,7 +233,10 @@ mod tests {
     fn parse_result_unsupported_error() {
         let mut pool = ParserPool::new();
         let result = pool.parse_result("fn main() {}", CoreLanguage::Unknown);
-        assert!(matches!(result, Err(ParseError::Unsupported(CoreLanguage::Unknown))));
+        assert!(matches!(
+            result,
+            Err(ParseError::Unsupported(CoreLanguage::Unknown))
+        ));
     }
 
     #[test]
@@ -352,7 +355,12 @@ mod tests {
     #[test]
     fn parse_tree_structure() {
         let mut pool = ParserPool::new();
-        let tree = pool.parse("fn add(a: i32, b: i32) -> i32 { a + b }", CoreLanguage::Rust).unwrap();
+        let tree = pool
+            .parse(
+                "fn add(a: i32, b: i32) -> i32 { a + b }",
+                CoreLanguage::Rust,
+            )
+            .unwrap();
         let root = tree.root_node();
         assert_eq!(root.kind(), "source_file");
         // Walk children using a cursor.
